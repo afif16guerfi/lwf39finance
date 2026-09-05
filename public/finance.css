@@ -1,0 +1,228 @@
+/* finance.css — reuses the design tokens defined in styles.css (:root /
+   .dark-mode) so the finance module always matches the referee platform's
+   theme, including dark mode, without redefining the palette. */
+
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:var(--sand);color:var(--ink);font-family:var(--font-sans);}
+#fin-app{min-height:100vh;}
+a{color:inherit}
+button{font-family:inherit}
+
+/* ---------- Login screen ---------- */
+.fin-login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;
+  background:linear-gradient(160deg, var(--green-pale) 0%, var(--sand) 55%, var(--paper) 100%);}
+.fin-login-card{width:100%;max-width:400px;background:var(--paper);border:1px solid var(--line);border-radius:var(--radius-xl);
+  box-shadow:var(--shadow-lg);padding:var(--space-5);text-align:center;}
+.fin-login-logo{width:72px;height:72px;border-radius:var(--radius-lg);object-fit:contain;margin:0 auto var(--space-3);display:block;background:var(--green-pale);}
+.fin-login-title{font-size:var(--fs-h4);font-weight:var(--fw-bold);color:var(--green-deep);margin:0 0 4px;}
+.fin-login-sub{font-size:var(--fs-caption);color:var(--ink-soft);margin:0 0 var(--space-4);letter-spacing:.3px;}
+.fin-field{text-align:right;margin-bottom:var(--space-3);}
+.fin-field label{display:block;font-size:var(--fs-small);color:var(--ink-soft);margin-bottom:6px;font-weight:var(--fw-medium);}
+.fin-field input,.fin-field select,.fin-field textarea{
+  width:100%;padding:11px 14px;border-radius:var(--radius-md);border:1px solid var(--line);background:var(--paper);
+  color:var(--ink);font-family:inherit;font-size:var(--fs-body);transition:border-color var(--transition), box-shadow var(--transition);}
+.fin-field input:focus,.fin-field select:focus,.fin-field textarea:focus{outline:none;border-color:var(--green-mid);box-shadow:var(--focus-ring);}
+.fin-field textarea{resize:vertical;min-height:70px;}
+.fin-btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:11px 20px;border-radius:var(--radius-md);
+  border:1px solid transparent;font-weight:var(--fw-semibold);font-size:var(--fs-body);cursor:pointer;transition:transform var(--transition-fast), box-shadow var(--transition), background var(--transition);}
+.fin-btn:active{transform:scale(.97);}
+.fin-btn-primary{background:var(--green-deep);color:#fff;}
+.fin-btn-primary:hover{background:var(--green-mid);box-shadow:var(--shadow-sm);}
+.fin-btn-danger{background:var(--red-accent);color:#fff;}
+.fin-btn-danger:hover{filter:brightness(1.08);}
+.fin-btn-ghost{background:transparent;color:var(--ink);border-color:var(--line);}
+.fin-btn-ghost:hover{background:var(--green-pale);border-color:var(--green-mid);}
+.fin-btn-sm{padding:6px 12px;font-size:var(--fs-small);}
+.fin-btn:disabled{opacity:.55;cursor:not-allowed;transform:none;}
+.fin-error{color:var(--red-accent);font-size:var(--fs-small);margin-top:8px;min-height:18px;}
+
+/* ---------- App shell ---------- */
+.fin-shell{display:flex;min-height:100vh;}
+.fin-sidebar{width:250px;flex-shrink:0;background:var(--paper);border-inline-end:1px solid var(--line);
+  display:flex;flex-direction:column;position:sticky;top:0;height:100vh;overflow-y:auto;transition:transform var(--transition);}
+.fin-brand{display:flex;align-items:center;gap:10px;padding:var(--space-4) var(--space-3);border-bottom:1px solid var(--line);}
+.fin-brand img{width:38px;height:38px;border-radius:10px;object-fit:contain;background:var(--green-pale);}
+.fin-brand-text{font-size:var(--fs-small);font-weight:var(--fw-bold);color:var(--green-deep);line-height:1.3;}
+.fin-nav{flex:1;padding:var(--space-2);display:flex;flex-direction:column;gap:2px;}
+.fin-nav-item{display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:var(--radius-md);color:var(--ink-soft);
+  font-size:var(--fs-small);font-weight:var(--fw-medium);cursor:pointer;text-decoration:none;border:1px solid transparent;}
+.fin-nav-item:hover{background:var(--green-pale);color:var(--green-deep);}
+.fin-nav-item.active{background:var(--green-deep);color:#fff;}
+.fin-nav-emoji{width:20px;text-align:center;}
+.fin-nav-section{padding:14px 14px 6px;font-size:11px;color:var(--ink-soft);font-weight:var(--fw-bold);letter-spacing:.4px;}
+.fin-sidebar-foot{padding:var(--space-3);border-top:1px solid var(--line);}
+
+.fin-main{flex:1;min-width:0;display:flex;flex-direction:column;}
+.fin-header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px var(--space-4);
+  background:var(--paper);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5;}
+.fin-header-title{font-size:var(--fs-h5);font-weight:var(--fw-bold);}
+.fin-header-user{display:flex;align-items:center;gap:10px;font-size:var(--fs-small);}
+.fin-role-badge{padding:3px 10px;border-radius:var(--radius-pill);background:var(--green-pale);color:var(--green-deep);font-size:11px;font-weight:var(--fw-bold);}
+.fin-menu-toggle{display:none;background:none;border:none;font-size:22px;cursor:pointer;color:var(--ink);}
+.fin-sidebar-backdrop{display:none;}
+.fin-content{padding:var(--space-4);flex:1;}
+
+/* ---------- Cards / dashboard ---------- */
+.fin-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:var(--space-3);margin-bottom:var(--space-4);}
+.fin-card{background:var(--paper);border:1px solid var(--line);border-radius:var(--radius-lg);padding:var(--space-3);box-shadow:var(--shadow-sm);}
+.fin-card-label{font-size:var(--fs-caption);color:var(--ink-soft);margin-bottom:8px;font-weight:var(--fw-medium);}
+.fin-card-value{font-size:1.55rem;font-weight:var(--fw-bold);}
+.fin-card.income .fin-card-value{color:var(--green-deep);}
+.fin-card.expense .fin-card-value{color:var(--red-accent);}
+.fin-card.balance .fin-card-value{color:var(--ink);}
+.fin-panel{background:var(--paper);border:1px solid var(--line);border-radius:var(--radius-lg);padding:var(--space-4);box-shadow:var(--shadow-sm);margin-bottom:var(--space-4);}
+.fin-panel-title{font-size:var(--fs-h6);font-weight:var(--fw-bold);margin:0 0 var(--space-3);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;}
+
+/* ---------- Simple SVG chart ---------- */
+.fin-chart-legend{display:flex;gap:16px;font-size:var(--fs-small);margin-bottom:10px;}
+.fin-chart-legend span{display:inline-flex;align-items:center;gap:6px;}
+.fin-dot{width:10px;height:10px;border-radius:50%;display:inline-block;}
+
+/* ---------- Forms / grid ---------- */
+.fin-grid-2{display:grid;grid-template-columns:1fr 1fr;gap:var(--space-3);}
+.fin-form-actions{display:flex;gap:10px;margin-top:var(--space-2);flex-wrap:wrap;}
+.fin-filters{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:var(--space-3);}
+.fin-filters .fin-field{margin-bottom:0;min-width:150px;flex:1;}
+
+/* ---------- Table ---------- */
+.fin-table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:var(--radius-lg);}
+table.fin-table{width:100%;border-collapse:collapse;font-size:var(--fs-small);min-width:760px;}
+table.fin-table th{background:var(--green-pale);color:var(--green-deep);text-align:center;padding:10px 8px;font-weight:var(--fw-bold);white-space:nowrap;position:sticky;top:0;}
+table.fin-table td{padding:9px 8px;text-align:center;border-top:1px solid var(--line);white-space:nowrap;}
+table.fin-table tbody tr{cursor:pointer;transition:background var(--transition-fast);}
+table.fin-table tbody tr:hover{background:var(--green-pale);}
+.fin-amount-income{color:var(--green-deep);font-weight:var(--fw-semibold);}
+.fin-amount-expense{color:var(--red-accent);font-weight:var(--fw-semibold);}
+.fin-badge{display:inline-block;padding:3px 10px;border-radius:var(--radius-pill);font-size:11px;font-weight:var(--fw-bold);}
+.fin-badge.income{background:var(--green-pale);color:var(--green-deep);}
+.fin-badge.expense{background:var(--red-pale);color:var(--red-accent);}
+.fin-badge.active{background:var(--green-pale);color:var(--green-deep);}
+.fin-badge.disabled{background:var(--line);color:var(--ink-soft);}
+.fin-pagination{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:var(--space-3);flex-wrap:wrap;font-size:var(--fs-small);color:var(--ink-soft);}
+.fin-pagination .fin-btn-sm{min-width:36px;}
+
+.fin-empty{text-align:center;padding:var(--space-6) var(--space-3);color:var(--ink-soft);}
+.fin-empty .fin-btn{margin-top:12px;}
+
+/* ---------- Modal ---------- */
+.fin-modal-overlay{position:fixed;inset:0;background:rgba(20,30,20,.45);display:flex;align-items:center;justify-content:center;
+  padding:16px;z-index:50;backdrop-filter:blur(2px);}
+.fin-modal{background:var(--paper);border-radius:var(--radius-xl);box-shadow:var(--shadow-lg);max-width:560px;width:100%;
+  max-height:88vh;overflow-y:auto;padding:var(--space-4);}
+.fin-modal-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-3);}
+.fin-modal-head h3{margin:0;font-size:var(--fs-h6);}
+.fin-modal-close{background:none;border:none;font-size:22px;cursor:pointer;color:var(--ink-soft);line-height:1;}
+.fin-timeline{border-inline-start:2px solid var(--line);margin-inline-start:6px;padding-inline-start:16px;}
+.fin-timeline-item{position:relative;padding-bottom:14px;font-size:var(--fs-small);}
+.fin-timeline-item::before{content:"";position:absolute;inset-inline-start:-21px;top:4px;width:9px;height:9px;border-radius:50%;background:var(--green-mid);}
+
+/* ---------- Toast ---------- */
+.fin-toast-wrap{position:fixed;bottom:20px;inset-inline-end:20px;z-index:100;display:flex;flex-direction:column;gap:8px;}
+.fin-toast{background:var(--ink);color:#fff;padding:12px 18px;border-radius:var(--radius-md);box-shadow:var(--shadow-lg);font-size:var(--fs-small);
+  animation:fin-toast-in .2s ease;}
+.fin-toast.error{background:var(--red-accent);}
+.fin-toast.success{background:var(--green-deep);}
+@keyframes fin-toast-in{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:translateY(0);}}
+
+/* ---------- Misc ---------- */
+.fin-muted{color:var(--ink-soft);}
+.fin-section-title{font-size:var(--fs-h4);font-weight:var(--fw-bold);margin:0 0 4px;}
+.fin-section-sub{color:var(--ink-soft);font-size:var(--fs-small);margin:0 0 var(--space-4);}
+.fin-tag-list{display:flex;flex-wrap:wrap;gap:8px;}
+.fin-loading{display:flex;align-items:center;justify-content:center;padding:40px;color:var(--ink-soft);}
+.fin-attachment-box{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;border:1px dashed var(--line-strong);
+  border-radius:var(--radius-md);background:var(--sand);font-size:var(--fs-small);}
+
+/* ---------- Tabs (used by the unified العمليات المالية page) ---------- */
+.fin-tabs{display:flex;gap:8px;margin-bottom:var(--space-3);flex-wrap:wrap;border-bottom:1px solid var(--line);}
+.fin-tab{background:transparent;border:none;border-bottom:3px solid transparent;padding:10px 18px;font-size:var(--fs-body);
+  font-weight:var(--fw-semibold);color:var(--ink-soft);cursor:pointer;font-family:inherit;min-height:44px;}
+.fin-tab:hover{color:var(--green-deep);}
+.fin-tab.active{color:var(--green-deep);border-bottom-color:var(--green-deep);}
+
+@media print{
+  .fin-sidebar, .fin-header, .fin-form-actions, .fin-filters, .fin-nav, .no-print{display:none !important;}
+  .fin-content{padding:0;}
+  body{background:#fff;}
+}
+
+/* ---------- Dedicated print report (section 13: عنوان + جدول فقط, no
+   dashboard/nav/buttons — see printFinancialReport() in finance.js) ---------- */
+#fin-print-area{display:none;}
+@media print{
+  body.fin-printing > *:not(#fin-print-area){display:none !important;}
+  body.fin-printing #fin-print-area{display:block !important;}
+}
+.fin-print-title{font-size:20px;font-weight:800;text-align:center;margin:0 0 4px;}
+.fin-print-subtitle{font-size:13px;text-align:center;color:#555;margin:0 0 18px;}
+.fin-print-table{width:100%;border-collapse:collapse;font-size:12px;}
+.fin-print-table th,.fin-print-table td{border:1px solid #ccc;padding:6px 8px;text-align:center;}
+.fin-print-table th{background:#0b6e4f;color:#fff;}
+.fin-print-table td.fin-title-cell{text-align:right;}
+.fin-print-totals{margin-top:14px;font-size:13px;font-weight:700;text-align:center;}
+
+/* ---------- Mobile ---------- */
+/* Tablet / small laptop */
+@media (max-width: 900px){
+  .fin-cards{grid-template-columns:repeat(2,1fr);}
+  .fin-grid-2{grid-template-columns:1fr;}
+  .fin-sidebar{width:220px;}
+}
+
+/* Phones and small tablets: sidebar becomes an off-canvas drawer, header
+   controls wrap instead of overflowing, tables keep working via horizontal
+   scroll (rather than being hidden), and every tap target grows to a
+   comfortable size — none of this hides or removes any feature, it only
+   reflows how it's laid out. */
+@media (max-width: 760px){
+  body{overflow-x:hidden;}
+  .fin-menu-toggle{display:block;min-width:40px;min-height:40px;font-size:24px;}
+  .fin-sidebar{position:fixed;inset-inline-start:0;top:0;bottom:0;width:min(280px,84vw);transform:translateX(110%);z-index:40;box-shadow:var(--shadow-lg);}
+  html[dir="rtl"] .fin-sidebar{transform:translateX(110%);}
+  html:not([dir="rtl"]) .fin-sidebar{transform:translateX(-110%);}
+  /* These two "open" rules must each match (or beat) the specificity of
+     the two dir-scoped "closed" rules directly above — since the whole
+     site runs dir="rtl", html[dir="rtl"] .fin-sidebar has an extra
+     element-type selector, which outranks the plain two-class
+     .fin-sidebar.open that used to be here alone. That mismatch meant
+     tapping ☰ toggled the "open" class in the DOM correctly, but the
+     closed-state rule kept winning and the drawer never visually moved
+     into view — the menu looked like it "didn't appear" on phones and
+     tablets even though the button worked. */
+  html[dir="rtl"] .fin-sidebar.open{transform:translateX(0);}
+  html:not([dir="rtl"]) .fin-sidebar.open{transform:translateX(0);}
+  .fin-sidebar-backdrop{display:block;position:fixed;inset:0;background:rgba(20,30,20,.4);z-index:39;opacity:0;pointer-events:none;transition:opacity var(--transition);}
+  .fin-sidebar-backdrop.show{opacity:1;pointer-events:auto;}
+  .fin-cards{grid-template-columns:1fr 1fr;}
+  .fin-header{padding:10px var(--space-3);flex-wrap:wrap;row-gap:8px;}
+  .fin-header-title{font-size:var(--fs-body-lg);}
+  .fin-header-user{flex-wrap:wrap;gap:8px;width:100%;justify-content:flex-start;}
+  .fin-content{padding:var(--space-3);}
+  .fin-panel{padding:var(--space-3);}
+  table.fin-table{min-width:640px;}
+  .fin-table-wrap{-webkit-overflow-scrolling:touch;}
+  .fin-filters{gap:8px;}
+  .fin-filters .fin-field{min-width:130px;}
+  .fin-btn{min-height:42px;}
+  .fin-form-actions{gap:8px;}
+  .fin-modal{max-width:100%;padding:var(--space-3);border-radius:var(--radius-lg) var(--radius-lg) 0 0;}
+  .fin-modal-overlay{padding:0;align-items:flex-end;}
+  .fin-modal{max-height:92vh;}
+  .fin-tab{padding:10px 12px;font-size:var(--fs-small);}
+}
+
+/* Small phones: everything stacks to a single column, form actions and
+   filter fields go full-width so they stay easy to tap and read, and the
+   dashboard summary cards drop to one per row. */
+@media (max-width: 480px){
+  .fin-cards{grid-template-columns:1fr;}
+  .fin-filters{flex-direction:column;}
+  .fin-filters .fin-field{min-width:0;width:100%;}
+  .fin-form-actions .fin-btn{flex:1 1 auto;}
+  .fin-panel-title{flex-direction:column;align-items:flex-start;}
+  .fin-panel-title > div{width:100%;}
+  .fin-pagination{flex-direction:column;align-items:stretch;text-align:center;}
+  .fin-login-card{padding:var(--space-4) var(--space-3);}
+  .fin-card-value{font-size:1.3rem;}
+  .fin-modal-head h3{font-size:var(--fs-body-lg);}
+}
