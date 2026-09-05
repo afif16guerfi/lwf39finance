@@ -311,7 +311,7 @@
         <div class="fin-field"><label>الوقت *</label><input name="time" required type="time" value="${existing ? existing.time || "00:00" : new Date().toTimeString().slice(0, 5)}"></div>
       </div>
       ${isExpense ? `
-      <div class="fin-field"><label>جهة الصرف *</label><select name="categoryId" required><option value="">اختر جهة الصرف</option>${catOptions}</select></div>
+      <div class="fin-field"><label>اللجنة أو الجهة التي تم الصرف عليها *</label><select name="categoryId" required><option value="">اختر اللجنة أو الجهة</option>${catOptions}</select></div>
       <div class="fin-field"><label>تفاصيل الصرف</label><textarea name="details" placeholder="مثال: شراء 10 كرات تدريب + 5 أطقم رياضية">${esc(existing && existing.details || "")}</textarea></div>
       ` : ""}
       <div class="fin-field"><label>ملاحظات</label><textarea name="notes">${esc(existing && existing.notes || "")}</textarea></div>
@@ -426,11 +426,11 @@
     return `
       <div class="fin-filters">
         <div class="fin-field"><label>بحث</label><input id="m-${type}-q" placeholder="رقم العملية / العنوان / التفاصيل"></div>
-        ${type === "expense" ? `<div class="fin-field"><label>جهة الصرف</label><select id="m-${type}-cat"><option value="">الكل</option>${catOptions}</select></div>` : ""}
+        ${type === "expense" ? `<div class="fin-field"><label>اللجنة أو الجهة</label><select id="m-${type}-cat"><option value="">الكل</option>${catOptions}</select></div>` : ""}
         <div class="fin-field"><label>من تاريخ</label><input id="m-${type}-from" type="date"></div>
         <div class="fin-field"><label>إلى تاريخ</label><input id="m-${type}-to" type="date"></div>
-        <div class="fin-field"><label>الترتيب</label><select id="m-${type}-order"><option value="newest">الأحدث أولًا</option><option value="oldest">الأقدم أولًا</option></select></div>
-        <div class="fin-field"><label>عدد الصفوف</label><select id="m-${type}-size"><option value="20">20</option><option value="50">50</option><option value="100">100</option></select></div>
+        <div class="fin-field"><label>الترتيب</label><select id="m-${type}-order"><option value="newest">⬇️ تنازلي (الأحدث أولًا)</option><option value="oldest">⬆️ تصاعدي (الأقدم أولًا)</option></select></div>
+        <div class="fin-field"><label>عدد الصفوف</label><select id="m-${type}-size"><option value="5">5</option><option value="10">10</option><option value="20" selected>20</option><option value="50">50</option></select></div>
       </div>
       <div class="fin-form-actions"><button class="fin-btn fin-btn-primary fin-btn-sm" id="m-${type}-apply">🔍 تطبيق البحث</button></div>`;
   }
@@ -538,7 +538,25 @@
         </div>`;
       document.getElementById("fin-export-excel").addEventListener("click", () => downloadExport("excel", txnFilterState));
       document.getElementById("fin-export-pdf").addEventListener("click", () => downloadExport("pdf", txnFilterState));
-      document.getElementById("fin-print-btn").addEventListener("click", () => window.print());
+      document.getElementById("fin-print-btn").addEventListener("click", () => {
+        openPrintOrientationDialog(async (orientation) => {
+          // Print EVERY matching transaction (not just the current page),
+          // in the exact order currently selected in the filters above
+          // (rقم العملية, تصاعدي/تنازلي) — pageSize:"all" bypasses
+          // pagination entirely on the server (see financeCore.js:
+          // listTransactions).
+          let full;
+          try {
+            full = await api("/finance/transactions" + qs({ ...txnFilterState, page: 1, pageSize: "all" }));
+          } catch (err) {
+            toast(err.message || "تعذّر تجهيز الطباعة ✕", "error");
+            return;
+          }
+          const orderLabel = (txnFilterState.order === "oldest") ? "تصاعدي" : "تنازلي";
+          const subtitle = `عدد العمليات: ${full.total} — الترتيب: ${orderLabel} (حسب رقم العملية) — مداخيل ${esc(full.totalIncomeFormatted)} · مصاريف ${esc(full.totalExpenseFormatted)} · الصافي ${esc(full.netFormatted)}`;
+          printAllTransactions(full.items, "كشف جميع العمليات المالية", subtitle, orientation);
+        });
+      });
       document.getElementById("fin-txn-results").querySelectorAll("[data-page]").forEach((b) => b.addEventListener("click", () => {
         txnFilterState.page = parseInt(b.getAttribute("data-page"), 10);
         refresh();
@@ -554,11 +572,11 @@
         <div class="fin-filters">
           <div class="fin-field"><label>بحث</label><input id="f-q" placeholder="رقم العملية / العنوان / التفاصيل"></div>
           <div class="fin-field"><label>النوع</label><select id="f-type"><option value="">الكل</option><option value="income">دخول</option><option value="expense">خروج</option></select></div>
-          <div class="fin-field"><label>جهة الصرف</label><select id="f-cat"><option value="">الكل</option>${catOptions}</select></div>
+          <div class="fin-field"><label>اللجنة أو الجهة</label><select id="f-cat"><option value="">الكل</option>${catOptions}</select></div>
           <div class="fin-field"><label>من تاريخ</label><input id="f-from" type="date"></div>
           <div class="fin-field"><label>إلى تاريخ</label><input id="f-to" type="date"></div>
-          <div class="fin-field"><label>الترتيب</label><select id="f-order"><option value="newest">الأحدث أولًا</option><option value="oldest">الأقدم أولًا</option></select></div>
-          <div class="fin-field"><label>عدد الصفوف</label><select id="f-size"><option value="20">20</option><option value="50">50</option><option value="100">100</option></select></div>
+          <div class="fin-field"><label>ترتيب العمليات (حسب رقم العملية)</label><select id="f-order"><option value="newest">⬇️ تنازلي (الأحدث أولًا)</option><option value="oldest">⬆️ تصاعدي (الأقدم أولًا)</option></select></div>
+          <div class="fin-field"><label>عدد الصفوف</label><select id="f-size"><option value="5">5</option><option value="10">10</option><option value="20" selected>20</option><option value="50">50</option></select></div>
         </div>
         <div class="fin-form-actions"><button class="fin-btn fin-btn-primary fin-btn-sm" id="fin-apply-filters">🔍 تطبيق البحث</button></div>
       </div>
@@ -691,6 +709,74 @@
     window.print();
   }
 
+  // ---- Professional print for "جميع العمليات" (section 3 of the برنامج
+  // update) ---------------------------------------------------------------
+  // Asks the user to pick a page orientation first, then prints ONLY a
+  // clean title + the transactions table — via the exact same dedicated
+  // #fin-print-area technique as printFinancialReport() above, so no
+  // sidebar/header/filters/buttons ever leak into the printed page — with
+  // the table laid out in whatever order (تصاعدي/تنازلي حسب رقم العملية)
+  // the caller already resolved.
+  function openPrintOrientationDialog(onConfirm) {
+    const overlay = document.createElement("div");
+    overlay.className = "fin-modal-overlay";
+    overlay.innerHTML = `
+      <div class="fin-modal" style="max-width:380px;">
+        <div class="fin-modal-head"><h3>خيارات الطباعة</h3><button class="fin-modal-close">&times;</button></div>
+        <div class="fin-field">
+          <label>اتجاه الصفحة</label>
+          <select id="fin-print-orientation-select">
+            <option value="portrait">🖨️ عمودي (Portrait)</option>
+            <option value="landscape">🖨️ أفقي (Landscape)</option>
+          </select>
+        </div>
+        <div class="fin-form-actions">
+          <button class="fin-btn fin-btn-primary fin-btn-sm" id="fin-print-confirm-btn">طباعة ✓</button>
+          <button class="fin-btn fin-btn-ghost fin-btn-sm" id="fin-print-cancel-btn">إلغاء</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+    overlay.querySelector(".fin-modal-close").addEventListener("click", () => overlay.remove());
+    overlay.querySelector("#fin-print-cancel-btn").addEventListener("click", () => overlay.remove());
+    overlay.querySelector("#fin-print-confirm-btn").addEventListener("click", () => {
+      const orientation = document.getElementById("fin-print-orientation-select").value === "landscape" ? "landscape" : "portrait";
+      overlay.remove();
+      onConfirm(orientation);
+    });
+  }
+
+  function printAllTransactions(items, title, subtitle, orientation) {
+    let area = document.getElementById("fin-print-area");
+    if (!area) { area = document.createElement("div"); area.id = "fin-print-area"; document.body.appendChild(area); }
+    const rows = items.map((t) => `<tr>
+        <td>${esc(t.transactionNumber)}</td>
+        <td>${esc(t.date)} - ${esc(t.time || "00:00")}</td>
+        <td class="fin-title-cell">${esc(t.title)}</td>
+        <td>${t.type === "income" ? "دخول" : "خروج"}</td>
+        <td>${esc(t.categoryName || "—")}</td>
+        <td>${t.type === "income" ? esc(t.amountFormatted) : "—"}</td>
+        <td>${t.type === "expense" ? esc(t.amountFormatted) : "—"}</td>
+        <td>${esc(t.runningBalanceFormatted || "—")}</td>
+      </tr>`).join("");
+    area.innerHTML = `
+      <p class="fin-print-title">${esc(title)}</p>
+      ${subtitle ? `<p class="fin-print-subtitle">${esc(subtitle)}</p>` : ""}
+      <table class="fin-print-table">
+        <thead><tr><th>رقم العملية</th><th>التاريخ والوقت</th><th>عنوان العملية</th><th>النوع</th><th>اللجنة/الجهة</th><th>مداخيل</th><th>مدفوعات</th><th>الرصيد</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+
+    let styleTag = document.getElementById("fin-print-orientation");
+    if (!styleTag) { styleTag = document.createElement("style"); styleTag.id = "fin-print-orientation"; document.head.appendChild(styleTag); }
+    styleTag.textContent = `@page { size: A4 ${orientation}; margin: 14mm; }`;
+
+    document.body.classList.add("fin-printing");
+    const cleanup = () => { document.body.classList.remove("fin-printing"); window.removeEventListener("afterprint", cleanup); };
+    window.addEventListener("afterprint", cleanup);
+    window.print();
+  }
+
   Pages["#/reports"] = async function (user) {
     const content = document.getElementById("fin-content");
     const { years, activeFinancialYearId } = await api("/finance/years");
@@ -709,6 +795,18 @@
           <div class="fin-field" id="r-month-field" style="display:none;"><label>الشهر</label><input id="r-month" type="month"></div>
           <div class="fin-field" id="r-from-field" style="display:none;"><label>من تاريخ</label><input id="r-from" type="date"></div>
           <div class="fin-field" id="r-to-field" style="display:none;"><label>إلى تاريخ</label><input id="r-to" type="date"></div>
+          <div class="fin-field"><label>ترتيب العمليات (حسب رقم العملية)</label>
+            <select id="r-order">
+              <option value="oldest">⬆️ تصاعدي (1 → 2 → 3)</option>
+              <option value="newest">⬇️ تنازلي (3 → 2 → 1)</option>
+            </select></div>
+          <div class="fin-field"><label>عدد العمليات في الصفحة</label>
+            <select id="r-size">
+              <option value="5">5</option>
+              <option value="10">10</option>
+              <option value="20" selected>20</option>
+              <option value="50">50</option>
+            </select></div>
           <div class="fin-field"><label>اتجاه الطباعة</label>
             <select id="r-orientation">
               <option value="portrait">📄 عمودي Portrait</option>
@@ -729,6 +827,35 @@
     syncScopeFields();
 
     let lastReport = null, lastTitle = "", lastSubtitle = "";
+    // Display-only pagination over the already-fetched (and already
+    // correctly ordered by رقم العملية) report.transactions — the report
+    // itself, its export, and its print always use the FULL list regardless
+    // of this page size (section 6: يعمل بشكل صحيح مع الترقيم/البحث/الفلترة/الترتيب).
+    const reportPageState = { page: 1, pageSize: 20 };
+
+    function renderReportTxnTable() {
+      const wrap = document.getElementById("r-txn-table-wrap");
+      if (!wrap || !lastReport) return;
+      const all = lastReport.transactions;
+      const totalPages = Math.max(1, Math.ceil(all.length / reportPageState.pageSize));
+      reportPageState.page = Math.min(Math.max(1, reportPageState.page), totalPages);
+      const start = (reportPageState.page - 1) * reportPageState.pageSize;
+      const pageItems = all.slice(start, start + reportPageState.pageSize);
+      wrap.innerHTML = `
+        ${renderTxnTable(pageItems)}
+        <div class="fin-pagination">
+          <span>صفحة ${reportPageState.page} من ${totalPages} (${all.length} عملية)</span>
+          <div style="display:flex;gap:6px;">
+            <button class="fin-btn fin-btn-ghost fin-btn-sm" ${reportPageState.page <= 1 ? "disabled" : ""} data-r-page="${reportPageState.page - 1}">السابق</button>
+            <button class="fin-btn fin-btn-ghost fin-btn-sm" ${reportPageState.page >= totalPages ? "disabled" : ""} data-r-page="${reportPageState.page + 1}">التالي</button>
+          </div>
+        </div>`;
+      wrap.querySelectorAll("[data-r-page]").forEach((b) => b.addEventListener("click", () => {
+        reportPageState.page = parseInt(b.getAttribute("data-r-page"), 10);
+        renderReportTxnTable();
+      }));
+      wireTableRowClicks(wrap, user);
+    }
 
     document.getElementById("r-run").addEventListener("click", async () => {
       const scopeMode = scopeSelect.value;
@@ -754,13 +881,21 @@
         if (!dateFrom || !dateTo) { toast("حدد تاريخ البداية والنهاية", "error"); return; }
         scope = { mode: "custom", from: dateFrom, to: dateTo };
       }
-      const params = { period: "custom", dateFrom, dateTo };
+      // "order" (ترتيب العمليات حسب رقم العملية، تصاعدي/تنازلي) is applied
+      // by the backend to report.transactions itself — the SAME params
+      // object is reused below for the Excel export, the PDF export, and
+      // the print button, so the chosen order (and period) is guaranteed
+      // identical everywhere (section 7/8 of the برنامج update).
+      const order = document.getElementById("r-order").value === "newest" ? "newest" : "oldest";
+      const params = { period: "custom", dateFrom, dateTo, order };
       const report = await api("/finance/reports/financial" + qs(params));
       lastReport = report;
       lastTitle = buildReportTitle(scope, activeYearLabel);
       lastSubtitle = scope.mode === "year"
         ? `السنة المالية: ${esc(activeYearLabel)}`
         : `الفترة: ${dateFrom || "البداية"} إلى ${dateTo || "اليوم"}`;
+      reportPageState.page = 1;
+      reportPageState.pageSize = parseInt(document.getElementById("r-size").value, 10) || 20;
 
       document.getElementById("r-results").innerHTML = `
         <div class="fin-cards">
@@ -769,19 +904,19 @@
           <div class="fin-card balance"><div class="fin-card-label">الرصيد</div><div class="fin-card-value">${esc(report.balanceFormatted)}</div></div>
         </div>
         <div class="fin-panel">
-          <div class="fin-panel-title">إجمالي المصاريف حسب جهة الصرف
+          <div class="fin-panel-title">إجمالي المصاريف حسب اللجنة أو الجهة
             <div style="display:flex;gap:8px;">
               <button class="fin-btn fin-btn-ghost fin-btn-sm" id="r-export-excel">⬇️ Excel</button>
               <button class="fin-btn fin-btn-ghost fin-btn-sm" id="r-export-pdf">⬇️ PDF</button>
               <button class="fin-btn fin-btn-ghost fin-btn-sm" id="r-print-btn">🖨️ طباعة</button>
             </div>
           </div>
-          ${report.byCategory.length ? `<div class="fin-table-wrap"><table class="fin-table"><thead><tr><th>جهة الصرف</th><th>عدد العمليات</th><th>الإجمالي</th></tr></thead>
+          ${report.byCategory.length ? `<div class="fin-table-wrap"><table class="fin-table"><thead><tr><th>اللجنة أو الجهة</th><th>عدد العمليات</th><th>الإجمالي</th></tr></thead>
             <tbody>${report.byCategory.map((c) => `<tr><td>${esc(c.categoryName)}</td><td>${c.count}</td><td class="fin-amount-expense">${esc(c.totalFormatted)}</td></tr>`).join("")}</tbody></table></div>`
           : `<p class="fin-muted">لا توجد مصاريف في هذه الفترة.</p>`}
         </div>
-        <div class="fin-panel"><div class="fin-panel-title">${esc(lastTitle)}</div>${renderTxnTable(report.transactions)}</div>`;
-      wireTableRowClicks(document.getElementById("r-results"), user);
+        <div class="fin-panel"><div class="fin-panel-title">${esc(lastTitle)}</div><div id="r-txn-table-wrap"></div></div>`;
+      renderReportTxnTable();
       document.getElementById("r-export-excel").addEventListener("click", () => downloadExport("excel", params));
       document.getElementById("r-export-pdf").addEventListener("click", () => downloadExport("pdf", params));
       document.getElementById("r-print-btn").addEventListener("click", () => printFinancialReport(lastReport, lastTitle, lastSubtitle));
@@ -794,27 +929,43 @@
     async function refresh() {
       const categories = await loadCategories();
       content.innerHTML = `
-        <p class="fin-section-title">جهات الصرف</p>
-        <p class="fin-section-sub">تُستخدم كوجهات لعمليات الخروج، ويمكن إضافة جهات جديدة أو تعطيلها.</p>
+        <p class="fin-section-title">اللجان والجهات (جهات الصرف)</p>
+        <p class="fin-section-sub">اللجان أو الجهات التي يتم الصرف عليها في عمليات الخروج (مثال: لجنة التحكيم، اللجنة الفنية، مستحقات الحكام، لجنة التنظيم، اللجنة الطبية، لجنة المنافسات، مصاريف إدارية...). يمكن إضافة لجنة/جهة جديدة، تعديلها، تعطيلها، أو حذفها إن لم تكن مرتبطة بأي عملية سابقة.</p>
         <div class="fin-panel">
-          <div class="fin-panel-title">إضافة جهة صرف جديدة</div>
+          <div class="fin-panel-title">➕ إضافة لجنة أو جهة جديدة</div>
           <form id="cat-form">
             <div class="fin-grid-2">
-              <div class="fin-field"><label>الاسم *</label><input name="name" required></div>
+              <div class="fin-field"><label>اسم اللجنة أو الجهة *</label><input name="name" required></div>
               <div class="fin-field"><label>الوصف</label><input name="description"></div>
             </div>
             <div class="fin-form-actions"><button class="fin-btn fin-btn-primary fin-btn-sm" type="submit">إضافة ✓</button></div>
           </form>
         </div>
         <div class="fin-panel">
-          <div class="fin-panel-title">القائمة (${categories.length})</div>
-          ${categories.length ? `<div class="fin-table-wrap"><table class="fin-table"><thead><tr><th>الاسم</th><th>الوصف</th><th>الحالة</th><th>—</th></tr></thead>
-            <tbody>${categories.map((c) => `<tr>
-              <td>${esc(c.name)}</td><td>${esc(c.description || "—")}</td>
+          <div class="fin-panel-title">📋 القائمة (${categories.length})</div>
+          ${categories.length ? `<div class="fin-table-wrap"><table class="fin-table"><thead><tr><th>اسم اللجنة/الجهة</th><th>الوصف</th><th>الحالة</th><th>—</th></tr></thead>
+            <tbody>${categories.map((c) => `<tr data-catid="${c.id}">
+              <td>
+                <span class="cat-view">${esc(c.name)}</span>
+                <input class="cat-edit" data-field="name" style="display:none;width:100%;" value="${esc(c.name)}">
+              </td>
+              <td>
+                <span class="cat-view">${esc(c.description || "—")}</span>
+                <input class="cat-edit" data-field="description" style="display:none;width:100%;" value="${esc(c.description || "")}">
+              </td>
               <td><span class="fin-badge ${c.status}">${c.status === "active" ? "مفعّلة" : "معطّلة"}</span></td>
-              <td><button class="fin-btn fin-btn-ghost fin-btn-sm" data-toggle="${c.id}" data-status="${c.status}">${c.status === "active" ? "تعطيل" : "تفعيل"}</button>
-                  <button class="fin-btn fin-btn-danger fin-btn-sm" data-del="${c.id}">حذف</button></td>
-            </tr>`).join("")}</tbody></table></div>` : `<div class="fin-empty">لا توجد جهات صرف بعد</div>`}
+              <td>
+                <span class="cat-view-actions">
+                  <button class="fin-btn fin-btn-ghost fin-btn-sm" data-edit-cat-start="${c.id}">✏️ تعديل</button>
+                  <button class="fin-btn fin-btn-ghost fin-btn-sm" data-toggle="${c.id}" data-status="${c.status}">${c.status === "active" ? "تعطيل" : "تفعيل"}</button>
+                  <button class="fin-btn fin-btn-danger fin-btn-sm" data-del="${c.id}">🗑️ حذف</button>
+                </span>
+                <span class="cat-edit-actions" style="display:none;">
+                  <button class="fin-btn fin-btn-primary fin-btn-sm" data-edit-cat-save="${c.id}">✓ حفظ</button>
+                  <button class="fin-btn fin-btn-ghost fin-btn-sm" data-edit-cat-cancel="${c.id}">✕ إلغاء</button>
+                </span>
+              </td>
+            </tr>`).join("")}</tbody></table></div>` : `<div class="fin-empty">لا توجد لجان أو جهات بعد</div>`}
         </div>`;
 
       document.getElementById("cat-form").addEventListener("submit", async (e) => {
@@ -822,17 +973,34 @@
         const fd = new FormData(e.target);
         try {
           await api("/finance/categories", { method: "POST", body: { name: fd.get("name"), description: fd.get("description") } });
-          toast("تمت إضافة جهة الصرف بنجاح ✓");
+          toast("تمت إضافة اللجنة/الجهة بنجاح ✓");
           refresh();
         } catch (err) { toast(err.message || "تعذّر الحفظ ✕", "error"); }
       });
+      content.querySelectorAll("[data-edit-cat-start]").forEach((b) => b.addEventListener("click", () => {
+        const row = b.closest("tr");
+        row.querySelectorAll(".cat-view").forEach((el) => el.style.display = "none");
+        row.querySelectorAll(".cat-edit").forEach((el) => el.style.display = "block");
+        row.querySelector(".cat-view-actions").style.display = "none";
+        row.querySelector(".cat-edit-actions").style.display = "block";
+      }));
+      content.querySelectorAll("[data-edit-cat-cancel]").forEach((b) => b.addEventListener("click", refresh));
+      content.querySelectorAll("[data-edit-cat-save]").forEach((b) => b.addEventListener("click", async () => {
+        const row = b.closest("tr");
+        const catId = b.getAttribute("data-edit-cat-save");
+        const body = {};
+        row.querySelectorAll(".cat-edit").forEach((el) => { body[el.getAttribute("data-field")] = el.value.trim(); });
+        if (!body.name) { toast("اسم اللجنة أو الجهة مطلوب", "error"); return; }
+        try { await api(`/finance/categories/${catId}`, { method: "PUT", body }); toast("تم التحديث ✓"); refresh(); }
+        catch (err) { toast(err.message || "تعذّر الحفظ ✕", "error"); }
+      }));
       content.querySelectorAll("[data-toggle]").forEach((b) => b.addEventListener("click", async () => {
         const nextStatus = b.getAttribute("data-status") === "active" ? "disabled" : "active";
         try { await api(`/finance/categories/${b.getAttribute("data-toggle")}`, { method: "PUT", body: { status: nextStatus } }); toast("تم التحديث ✓"); refresh(); }
         catch (err) { toast(err.message, "error"); }
       }));
       content.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", async () => {
-        if (!confirm("هل أنت متأكد من حذف جهة الصرف هذه؟")) return;
+        if (!confirm("هل أنت متأكد من حذف هذه اللجنة/الجهة؟ (لن يُسمح بالحذف إذا كانت مرتبطة بعمليات مالية سابقة)")) return;
         try { await api(`/finance/categories/${b.getAttribute("data-del")}`, { method: "DELETE" }); toast("تم الحذف ✓"); refresh(); }
         catch (err) { toast(err.message, "error"); }
       }));

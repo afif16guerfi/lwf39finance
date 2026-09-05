@@ -155,10 +155,17 @@ table.fin-table tbody tr:hover{background:var(--green-pale);}
 }
 .fin-print-title{font-size:20px;font-weight:800;text-align:center;margin:0 0 4px;}
 .fin-print-subtitle{font-size:13px;text-align:center;color:#555;margin:0 0 18px;}
-.fin-print-table{width:100%;border-collapse:collapse;font-size:12px;}
-.fin-print-table th,.fin-print-table td{border:1px solid #ccc;padding:6px 8px;text-align:center;}
+/* table-layout:fixed + word-break keeps the printed/exported table from
+   ever spilling outside the page edges or splitting a column badly,
+   whatever the chosen orientation (portrait/landscape) or column count
+   turns out to be — width:100% then lets it re-fit automatically to
+   whichever page size Chromium/the browser prints to. */
+.fin-print-table{width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed;}
+.fin-print-table th,.fin-print-table td{border:1px solid #ccc;padding:6px 8px;text-align:center;word-break:break-word;}
 .fin-print-table th{background:#0b6e4f;color:#fff;}
 .fin-print-table td.fin-title-cell{text-align:right;}
+.fin-print-table thead{display:table-header-group;} /* repeats the header row on every printed page */
+.fin-print-table tr{page-break-inside:avoid;}
 .fin-print-totals{margin-top:14px;font-size:13px;font-weight:700;text-align:center;}
 
 /* ---------- Mobile ---------- */
