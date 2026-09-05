@@ -5,14 +5,14 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js",
-    "postinstall": "PUPPETEER_CACHE_DIR=$PWD/.cache/puppeteer npx puppeteer browsers install chrome"
+    "dev": "node server.js"
   },
   "license": "UNLICENSED",
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
+    "@sparticuz/chromium": "131.0.0",
     "bcryptjs": "^2.4.3",
     "cloudinary": "^2.5.1",
     "cors": "^2.8.5",
@@ -22,7 +22,7 @@
     "jsonwebtoken": "^9.0.2",
     "mongodb": "^6.10.0",
     "multer": "^2.0.0",
-    "puppeteer": "^23.9.0",
+    "puppeteer-core": "^23.9.0",
     "uuid": "^9.0.1"
   }
 }

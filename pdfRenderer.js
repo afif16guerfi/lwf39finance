@@ -4,7 +4,7 @@
 // PDF-producing module):
 //
 // pdfkit (the library financePdf.js used to call directly) has no OpenType
-// shaping engine — no HarfHuzz/GSUB, no bidi algorithm. It draws exactly
+// shaping engine — no HarfBuzz/GSUB, no bidi algorithm. It draws exactly
 // the glyph you hand it, one at a time, in the order you hand it. Arabic
 // text is contextual (a letter's shape depends on its neighbours) and
 // right-to-left, so pdfkit fed plain Arabic produces disconnected,
@@ -27,172 +27,49 @@
 // Any module that needs to produce a PDF should build an HTML string
 // (see financePdf.js for the reference pattern) and call
 // renderHtmlToPdf() below rather than reaching for pdfkit.
+//
+// ============================================================================
+// HOW CHROMIUM IS OBTAINED (read this before touching getLocalBrowser below)
+// ============================================================================
+// This went through three approaches on this project's Render Free instance
+// before landing here, each confirmed broken for a different reason:
+//
+//  1. Full "puppeteer" package + its own Chrome download (either at build
+//     time via a postinstall script, or lazily at runtime): repeatedly
+//     confirmed to silently produce an incomplete/corrupt Chrome binary on
+//     Render's Free plan (the download step reported success, no thrown
+//     error, but the file at the expected executable path was missing or
+//     truncated). Root cause: downloading + unpacking a ~300MB+ Chrome
+//     build reliably needs more disk/RAM headroom than Render's Free plan
+//     gives a Node web service.
+//  2. A remote hosted browser (Browserless.io free tier) via
+//     puppeteer.connect(): avoided the download problem, but hit two
+//     further issues specific to how these hosted-browser services manage
+//     sessions — a cached, reused connection died with "Protocol error:
+//     Connection closed" on the second request (fixed by connecting fresh
+//     per request), and page.pdf() output was observed corrupted/truncated
+//     on at least one run, consistent with the free tier's session/time
+//     limits cutting a render short mid-stream.
+//  3. (Current) @sparticuz/chromium + "puppeteer-core": a Chromium build
+//     purpose-made for exactly this constraint (small/serverless hosts) —
+//     shipped brotli-compressed AS PART OF THE NPM PACKAGE ITSELF (~50MB),
+//     so `npm install` alone is enough; there is no separate network
+//     download step at build or run time to fail. Decompressing it at
+//     launch time is a fast local disk operation, not a network transfer,
+//     so it doesn't hit the same disk/RAM ceiling that broke approach #1.
+//     This is the default now. See getLocalBrowser() below.
+//
+// An optional PDF_BROWSER_WS_ENDPOINT environment variable is still
+// supported as an escape hatch (e.g. to point at Browserless or another
+// hosted browser instead) — see connectRemoteBrowser() below — but it is no
+// longer the primary path, since approach #3 above resolved the underlying
+// problem without needing an external service at all.
+// ============================================================================
 
 const fs = require("fs");
 const path = require("path");
-
-// Some hosts (Render is the confirmed case here) build the app in one
-// place but only actually deploy/persist a subset of the filesystem to
-// the running instance — specifically the project directory itself, NOT
-// unrelated paths outside it like $HOME/.cache. Puppeteer's default
-// download location for Chrome is $HOME/.cache/puppeteer, which is
-// exactly outside that persisted subset — so Chrome gets downloaded
-// successfully during the build, then is simply gone by the time the
-// server actually starts ("Could not find Chrome" even though the build
-// logs showed no error). The fix used on both ends of the install: this
-// file defaults PUPPETEER_CACHE_DIR to a path INSIDE this project
-// directory (unless the hosting platform already set its own value, which
-// is always respected instead), and package.json's "postinstall" script
-// downloads Chrome to that same project-local path during npm install —
-// so the browser that gets downloaded is the one still there when the
-// server launches it, with no manual per-host environment-variable setup
-// required. This must run before requiring "puppeteer" below, since that
-// require is what reads this variable to decide where to look.
-if (!process.env.PUPPETEER_CACHE_DIR) {
-  process.env.PUPPETEER_CACHE_DIR = path.join(__dirname, ".cache", "puppeteer");
-}
-const puppeteer = require("puppeteer");
-const { execFile } = require("child_process");
-const { promisify } = require("util");
-const execFileAsync = promisify(execFile);
-
-// CONFIRMED ON RENDER (2026): the theory above — that the project directory
-// survives between build and runtime while $HOME does not — turned out to
-// be incomplete. Real production logs showed the build step downloading
-// Chrome to this exact PUPPETEER_CACHE_DIR with zero errors ("postinstall"
-// completing cleanly, "Build successful"), and the *same* path still coming
-// up empty moments later when the freshly deployed instance started and
-// tried to launch it. Render's native (non-Docker) deploys build in one
-// place, then compress/upload/redeploy that build as a separate step
-// ("Uploading build...", "Deploying...") — and whatever that packaging step
-// does, this project-local .cache/puppeteer directory does not reliably
-// survive it. Waiting for a proper fix upstream isn't reliable, so instead
-// this makes Chrome self-installing at runtime: before ever launching the
-// browser, check whether the executable Puppeteer expects is actually on
-// disk *right now, in this running instance* — not "was it downloaded at
-// some point during the build" — and download it on the spot if not. That
-// guarantees the download happens on the exact filesystem that will use it,
-// which sidesteps the build/runtime split entirely. It costs a one-time
-// delay (Chrome is roughly 150-200MB) the first time a fresh instance
-// serves a PDF after a deploy or restart, but turns a hard failure that
-// needed a manual "clear build cache" redeploy into a self-healing one.
-// The existing package.json "postinstall" step is left in place too — on
-// hosts where build and runtime *do* share a disk, it means Chrome is
-// already there and this check below is an instant no-op.
-const PUPPETEER_CLI_PATH = require.resolve("puppeteer/lib/cjs/puppeteer/node/cli.js");
-
-// CONFIRMED ON RENDER (2026), second incident: a plain fs.existsSync(executablePath)
-// check is not enough. Production logs showed this exact sequence: this check
-// passed (so ensureChromeInstalled() returned immediately, logging nothing),
-// yet the very next line — puppeteer.launch() — failed with the browser's own
-// "Could not find Chrome" error for that identical path. The only way both are
-// true is that *something* exists at that path (so existsSync says yes) that
-// isn't a real, complete Chrome binary — e.g. a zero-byte or partially-written
-// leftover from an interrupted previous download/deploy. existsSync doesn't
-// care about file type or size, so it happily reports "present" for that too.
-// isChromeReallyInstalled() checks what actually matters: the path must be a
-// regular file (not a directory or broken symlink) with a non-trivial size —
-// the real Chrome binary is tens of megabytes, so anything near-empty is
-// unambiguously a corrupt leftover, not a valid executable.
-function isChromeReallyInstalled(executablePath) {
-  if (!executablePath) return false;
-  try {
-    const stat = fs.statSync(executablePath);
-    return stat.isFile() && stat.size > 1024 * 1024; // real Chrome binaries are 50MB+; 1MB is a generous floor for "not an empty/truncated stub"
-  } catch (e) {
-    return false; // path doesn't exist, or isn't readable — either way, not a usable install
-  }
-}
-
-let chromeEnsuredPromise = null;
-// Resolves to the verified, launch-ready executablePath (a string) once
-// Chrome is confirmed present on this instance's disk — never just undefined
-// — so callers (getLocalBrowser()) can hand that *exact* path straight to
-// puppeteer.launch({ executablePath }) instead of letting launch() compute
-// its own path a second time. Two independent computations of "where is
-// Chrome" are exactly how the mismatch above happened; passing the one
-// verified path forward removes the second computation entirely.
-function ensureChromeInstalled() {
-  if (!chromeEnsuredPromise) {
-    chromeEnsuredPromise = (async () => {
-      let executablePath = null;
-      try {
-        executablePath = puppeteer.executablePath();
-      } catch (e) {
-        executablePath = null; // computing the expected path itself failed — fall through to installing anyway
-      }
-      if (isChromeReallyInstalled(executablePath)) {
-        return executablePath; // already present on this instance's disk — the normal case once a host is warmed up
-      }
-      console.log("⏳ لم يُعثر على نسخة صالحة من Chrome في هذا الخادم — يجري تنزيله الآن قبل أول عملية تصدير PDF (قد يستغرق نحو دقيقة)...");
-      // Real production case (Render, 2026): the build's copy of the browser
-      // folder can survive the deploy as an empty/partial shell — the
-      // directory itself is there but the actual chrome binary inside it is
-      // not. @puppeteer/browsers' installer treats "the version folder
-      // already exists" as "already installed" and, on finding the
-      // executable missing inside it, throws instead of re-downloading —
-      // so on a host with this exact corruption, every single install
-      // attempt fails forever with "the browser folder exists but the
-      // executable is missing", even though a plain retry would fix it.
-      // Clear out that stale folder first so the installer is forced to do
-      // a full, real download+unpack instead of trusting a broken leftover.
-      // Was previously "only clean up if the file is totally missing" — that
-      // missed exactly the corrupt-but-present case isChromeReallyInstalled()
-      // now catches above (a truncated/zero-byte binary still "exists"), so a
-      // stale folder in that state was never cleared and every install
-      // attempt kept trusting the same broken leftover. Now: any time we've
-      // decided a reinstall is needed, always clear the old folder first.
-      if (executablePath) {
-        const staleBrowserDir = path.dirname(path.dirname(executablePath));
-        if (fs.existsSync(staleBrowserDir)) {
-          try {
-            fs.rmSync(staleBrowserDir, { recursive: true, force: true });
-            console.log(`🧹 حذف نسخة Chrome غير مكتملة/تالفة من نشر سابق: ${staleBrowserDir}`);
-          } catch (e) {
-            console.error(`✗ تعذّر حذف مجلد Chrome التالف (${staleBrowserDir}) قبل إعادة التنزيل:`);
-            console.error(e);
-            // Keep going anyway — the install attempt below will surface its
-            // own clear error if the stale folder really is what blocks it.
-          }
-        }
-      }
-      try {
-        await execFileAsync(
-          process.execPath,
-          [PUPPETEER_CLI_PATH, "browsers", "install", "chrome"],
-          { cwd: __dirname, env: process.env, maxBuffer: 1024 * 1024 * 20 }
-        );
-        // Re-resolve rather than trusting the pre-install `executablePath`
-        // variable as-is: if it was null (the executablePath() call above
-        // threw), this is the first time we have a path at all. And do not
-        // trust a zero-exit-code install on faith either — verify with the
-        // same strict, real-file-size check used above, so a silent partial
-        // install (e.g. disk quota hit mid-download, no non-zero exit code)
-        // surfaces as a clear error here instead of an opaque failure later
-        // inside puppeteer.launch().
-        const installedPath = puppeteer.executablePath();
-        if (!isChromeReallyInstalled(installedPath)) {
-          throw new Error(
-            `اكتمل أمر التثبيت دون خطأ ظاهر، لكن الملف عند المسار المتوقَّع (${installedPath}) مفقود أو غير مكتمل. ` +
-            `على الأرجح مساحة القرص أو ذاكرة الخادم غير كافية لإكمال فك ضغط Chrome بالكامل — راجع خطة الاستضافة الحالية.`
-          );
-        }
-        console.log("✔ تم تنزيل Chrome والتحقق منه بنجاح، محرك PDF جاهز الآن.");
-        return installedPath;
-      } catch (e) {
-        // Don't cache a rejected promise forever — a transient network hiccup
-        // during this on-demand install shouldn't permanently break PDF
-        // export for the rest of the process's lifetime; let the next
-        // request try again.
-        chromeEnsuredPromise = null;
-        console.error("✗ فشل تنزيل Chrome عند بدء التشغيل:");
-        console.error(e);
-        throw e;
-      }
-    })();
-  }
-  return chromeEnsuredPromise;
-}
+const puppeteer = require("puppeteer-core");
+const chromium = require("@sparticuz/chromium");
 
 const FONT_REGULAR = path.join(__dirname, "assets", "fonts", "Tajawal-Regular.ttf");
 const FONT_BOLD = path.join(__dirname, "assets", "fonts", "Tajawal-Bold.ttf");
@@ -218,83 +95,103 @@ function fontFaceCss() {
   return fontFaceCssCache;
 }
 
-// A single headless Chromium instance is reused across requests when running
-// LOCAL Chrome (starting it up takes real time) — lazily launched on first
-// use and kept alive for the life of the server process.
+// A single local Chromium instance is reused across requests (starting it
+// up takes real time, even the fast local decompress-and-launch path below)
+// — lazily launched on first use and kept alive for the life of the server
+// process.
 //
-// TWO MODES, chosen automatically:
-//
-// 1. REMOTE (recommended on small/free hosts like Render's Free plan): if
-//    PDF_BROWSER_WS_ENDPOINT is set, we connect to an already-running Chrome
-//    hosted elsewhere (e.g. a free Browserless.io account) instead of
-//    downloading/launching our own. This is what actually fixes PDF export
-//    on hosts too small to reliably download+unpack Chrome (confirmed cause
-//    on this project's Render Free instance: the download silently produced
-//    an incomplete binary — see ensureChromeInstalled()'s comments above).
-//    Get a free WebSocket URL by signing up at https://www.browserless.io
-//    (free tier), then set PDF_BROWSER_WS_ENDPOINT in Render's environment
-//    variables (Dashboard → service → Environment) to the URL they give you
-//    (looks like wss://production-sfo.browserless.io?token=XXXX).
-//
-//    IMPORTANT: unlike local mode, a remote connection is opened FRESH for
-//    every single PDF request and disconnected right after — never cached.
-//    Confirmed in production: caching one Browserless connection and reusing
-//    it across requests worked for the first request, then failed every
-//    request after with "Protocol error: Connection closed" — these hosted
-//    browser services close the session after a single use (or a short idle
-//    window), so a long-lived cached connection is exactly the wrong pattern
-//    here, even though it's the right pattern for local mode below.
-//
-// 2. LOCAL (the original behaviour, used when PDF_BROWSER_WS_ENDPOINT is not
-//    set — e.g. on a paid plan with enough RAM/disk, or any host where
-//    downloading Chrome works fine): launches Chrome from this instance's
-//    own disk via ensureChromeInstalled(), cached and reused across requests
-//    since re-launching a local Chrome process every request would be slow.
-//
-// The extra launch flags beyond --no-sandbox (LOCAL mode only) exist because
-// that runs inside a containerized host (Render, Docker, etc.) where the
-// defaults commonly fail: --disable-dev-shm-usage avoids Chromium crashing
-// on the tiny /dev/shm containers give by default, and --disable-gpu avoids
-// GPU-related startup failures on machines with no real GPU.
+// chromium.executablePath() (from @sparticuz/chromium) does the one-time
+// work of decompressing the bundled brotli Chromium archive to a local temp
+// path and returns that path — a local disk operation, not a network
+// request, so it doesn't depend on any external download succeeding.
+// chromium.args carries the sandboxing/stability flags this package
+// maintains specifically for constrained container hosts (equivalent in
+// purpose to the old hand-written --no-sandbox/--disable-dev-shm-usage
+// list, but kept in sync with each Chromium build by the package itself).
 let localBrowserPromise = null;
-function connectRemoteBrowser(remoteEndpoint) {
-  // No caching here on purpose — see the IMPORTANT note above.
-  return puppeteer.connect({ browserWSEndpoint: remoteEndpoint });
-}
 function getLocalBrowser() {
   if (!localBrowserPromise) {
-    // executablePath comes from ensureChromeInstalled() — the one place
-    // that actually verified (real file, real size) that a launchable
-    // Chrome sits at this path. Passing it straight into launch() means
-    // Puppeteer never recomputes "where is Chrome" a second time on its
-    // own; the exact path that was checked is the exact path that gets
-    // launched. Unless the host sets PUPPETEER_EXECUTABLE_PATH itself, in
-    // which case Puppeteer already prefers that over anything computed
-    // here.
-    localBrowserPromise = ensureChromeInstalled().then((executablePath) => puppeteer.launch({
-      headless: true,
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || executablePath,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-      ],
-    }).catch((e) => {
+    localBrowserPromise = chromium.executablePath().then((executablePath) => puppeteer.launch({
+      executablePath,
+      args: chromium.args,
+      headless: chromium.headless,
+    })).catch((e) => {
       localBrowserPromise = null; // allow retrying on the next call instead of staying broken forever
       // Logged in full here (not just re-thrown) because this is the one
       // place that actually knows this was a *launch* failure specifically
       // — by the time it reaches routes/finance.js's catch block, that
       // context is easy to lose in a generic "تعذر إنشاء ملف PDF" log line.
-      console.error("✗ فشل تشغيل Chromium (Puppeteer) — راجع الرسالة أدناه لمعرفة السبب الدقيق:");
+      console.error("✗ فشل تشغيل Chromium (@sparticuz/chromium) — راجع الرسالة أدناه لمعرفة السبب الدقيق:");
       console.error(e);
-      throw e;
-    })).catch((e) => {
-      localBrowserPromise = null; // also reset on an ensureChromeInstalled() failure, not just a launch() failure
       throw e;
     });
   }
   return localBrowserPromise;
+}
+
+// Escape hatch, not the default: connect to an already-running Chrome
+// hosted elsewhere (e.g. Browserless.io) instead of the local
+// @sparticuz/chromium instance above. Only used when PDF_BROWSER_WS_ENDPOINT
+// is explicitly set. Opened fresh for every single render and disconnected
+// right after — never cached — because hosted-browser services of this kind
+// were confirmed (on this project, using Browserless's free tier) to close
+// the underlying session after a single use or a short idle window; a
+// cached, reused connection reliably failed on the second request with
+// "Protocol error: Connection closed".
+function connectRemoteBrowser(remoteEndpoint) {
+  return puppeteer.connect({ browserWSEndpoint: remoteEndpoint });
+}
+
+// Renders an HTML string to a PDF buffer. No header/footer template is
+// ever passed to Chromium, and displayHeaderFooter stays false — that is
+// what actually suppresses Chromium's own default date/URL/page-number
+// header and footer at the PDF-generation level (not just visually
+// hiding them with CSS, which would leave them in the underlying PDF).
+async function renderHtmlToPdf(bodyHtml, {
+  extraCss = "",
+  format = "A4",
+  landscape = false,
+  margin = { top: "12mm", bottom: "12mm", left: "12mm", right: "12mm" },
+} = {}) {
+  const remoteEndpoint = process.env.PDF_BROWSER_WS_ENDPOINT;
+  const browser = remoteEndpoint ? await connectRemoteBrowser(remoteEndpoint) : await getLocalBrowser();
+  const page = await browser.newPage();
+  try {
+    const html = wrapHtmlDocument(bodyHtml, { extraCss });
+    // Every resource in this document (the Arabic font, all styling) is
+    // already embedded as a base64 data URI — there's no real external
+    // network activity for "networkidle0" to ever detect, and waiting on it
+    // anyway was observed hanging for the full default 30s timeout over a
+    // remote CDP connection (a known quirk of navigation-lifecycle tracking
+    // on connect()-ed remote sessions). "domcontentloaded" is sufficient
+    // (nothing here loads after DOM parse anyway) and immune to that hang.
+    // The document.fonts.ready wait right below is what actually guarantees
+    // the embedded font is applied before printing, regardless of this
+    // setting.
+    await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 60000 });
+    // Make sure the embedded Arabic font has actually finished loading
+    // and is applied before Chromium rasterizes the page to PDF — a race
+    // here is exactly the kind of "the font wasn't ready yet" bug that
+    // causes silent fallback to a font with no Arabic glyphs.
+    await page.evaluateHandle("document.fonts.ready");
+    const pdfBuffer = await page.pdf({
+      format,
+      landscape,
+      margin,
+      printBackground: true,
+      displayHeaderFooter: false, // no date, no URL, no page numbers — see file header note
+    });
+    return pdfBuffer;
+  } catch (e) {
+    console.error("✗ فشل توليد PDF أثناء تحويل الصفحة (page.setContent/page.pdf):");
+    console.error(e);
+    throw e;
+  } finally {
+    await page.close().catch(() => {}); // page may already be gone if the browser itself crashed above
+    if (remoteEndpoint) {
+      browser.disconnect(); // remote session: always drop our connection at the end of this one render — see connectRemoteBrowser() note
+    }
+  }
 }
 
 // Runs a minimal end-to-end check (launch Chromium → render one page → make
@@ -322,26 +219,17 @@ async function checkPdfEngine() {
 // different fix.
 function pdfEngineFailureHint(e) {
   const msg = String((e && e.message) || e || "");
-  if (/Could not find (Chrome|Chromium)|Chromium revision is not downloaded/i.test(msg)) {
-    return "لم يُعثر على Chrome في مسار التخزين المؤقت (PUPPETEER_CACHE_DIR). هذا الإصدار يضبط هذا المسار تلقائيًا داخل مجلد المشروع نفسه (وأضاف postinstall في package.json يُنزّل Chrome لنفس المسار عند npm install) — لكن هذا يسري فقط بدءًا من أول تثبيت (npm install) يُنفَّذ بعد رفع هذا التحديث. الحل: أعد النشر مع تفريغ ذاكرة البناء المؤقتة بالكامل (\"Clear build cache & deploy\" إن كنت تستخدم Render، أو ما يعادلها في استضافتك) حتى تُعاد خطوتا npm install وpostinstall من الصفر ويُنزَّل Chrome داخل مجلد المشروع في المكان الصحيح. إعادة نشر عادية بدون تفريغ الكاش قد لا تكفي لأن npm قد يتخطى postinstall إن اعتبر الحزم مثبَّتة أصلاً.";
-  }
   if (/error while loading shared libraries|libnss3|libatk|libgbm|libasound/i.test(msg)) {
     return "النظام الأساسي للخادم ينقصه بعض مكتبات النظام التي يحتاجها Chromium (مثل libnss3/libatk/libgbm/libasound). هذه مشكلة شائعة على استضافات تستخدم صورة Linux مصغّرة (Alpine أو صورة Docker خفيفة) — يلزم تثبيت مكتبات Chromium الأساسية على مستوى النظام (على Debian/Ubuntu: `apt-get install -y chromium` أو الحزم المذكورة في رسالة الخطأ)، أو التحويل لصورة Docker تحتويها مسبقًا (مثل صورة Puppeteer الرسمية).";
   }
   if (/Timed out|timeout/i.test(msg)) {
     return "انتهت مهلة تشغيل Chromium أو تحميل الصفحة — غالبًا يعني هذا أن الخادم يعاني من ضغط على الذاكرة/المعالج (شائع على خطط الاستضافة المجانية/الصغيرة). جرّب زيادة موارد الخادم، أو تحقق من عدم وجود عدة عمليات Chromium عالقة من محاولات سابقة.";
   }
-  if (/Protocol error|Target closed|Navigation failed/i.test(msg)) {
-    return "أُغلقت صفحة Chromium أو انهارت أثناء التوليد — غالبًا بسبب نفاد الذاكرة على الخادم. تحقّق من حجم الذاكرة المتاحة لخطة الاستضافة الحالية.";
-  }
-  if (/Got status code|ECONNREFUSED|ENOTFOUND|ETIMEDOUT/i.test(msg) && /browsers install|storage\.googleapis/i.test(msg)) {
-    return "تعذّر تنزيل Chrome عند بدء تشغيل الخادم (محاولة التنزيل الذاتي عند التشغيل) بسبب مشكلة شبكة — غالبًا لأن الخادم يمنع الوصول إلى storage.googleapis.com (مصدر تنزيل Chrome الرسمي). تحقّق من أي قيود على الشبكة الصادرة (outbound) في إعدادات الاستضافة، أو أعد المحاولة لاحقًا إن كانت المشكلة مؤقتة من طرف الشبكة.";
-  }
-  if (/browser folder .* exists but the executable .* is missing/i.test(msg)) {
-    return "بقيت نسخة تالفة/غير مكتملة من Chrome من عملية نشر سابقة (المجلد موجود لكن الملف التنفيذي داخله مفقود)، والنسخة الحالية من الكود تحذف هذا المجلد تلقائيًا قبل إعادة التنزيل — إن ظهر هذا الخطأ رغم ذلك، أعد تشغيل الخدمة (Restart) من Render حتى يُعاد تنفيذ منطق التنظيف والتنزيل الذاتي من جديد.";
+  if (/Protocol error|Target closed|Navigation failed|Connection closed/i.test(msg)) {
+    return "أُغلقت صفحة Chromium أو انهارت أثناء التوليد — غالبًا بسبب نفاد الذاكرة على الخادم، أو (إن كنت تستخدم PDF_BROWSER_WS_ENDPOINT) انقطاع الاتصال بخدمة Chrome الخارجية. تحقّق من حجم الذاكرة المتاحة لخطة الاستضافة الحالية، ومن حالة الخدمة الخارجية إن كانت مستخدَمة.";
   }
   if (process.env.PDF_BROWSER_WS_ENDPOINT && /connect|websocket|WebSocket|ECONNREFUSED|401|403|unauthorized|invalid token|quota/i.test(msg)) {
-    return "فشل الاتصال بخدمة Chrome الخارجية عبر PDF_BROWSER_WS_ENDPOINT. تحقّق من أن رابط الـ WebSocket (وخاصة رمز token الموجود فيه) صحيح ولم تنتهِ صلاحيته، ومن أن الحساب في الخدمة الخارجية (مثل Browserless) لم يتجاوز الحد المجاني الشهري المسموح به.";
+    return "فشل الاتصال بخدمة Chrome الخارجية عبر PDF_BROWSER_WS_ENDPOINT. تحقّق من أن رابط الـ WebSocket (وخاصة رمز token الموجود فيه) صحيح ولم تنتهِ صلاحيته، ومن أن الحساب في الخدمة الخارجية لم يتجاوز الحد المجاني الشهري المسموح به.";
   }
   return "راجع رسالة الخطأ أعلاه — إن لم تكن واضحة، أرسلها كما هي للمطوّر لتشخيصها.";
 }
@@ -366,63 +254,6 @@ ${extraCss}
 ${bodyHtml}
 </body>
 </html>`;
-}
-
-// Renders an HTML string to a PDF buffer. No header/footer template is
-// ever passed to Chromium, and displayHeaderFooter stays false — that is
-// what actually suppresses Chromium's own default date/URL/page-number
-// header and footer at the PDF-generation level (not just visually
-// hiding them with CSS, which would leave them in the underlying PDF).
-async function renderHtmlToPdf(bodyHtml, {
-  extraCss = "",
-  format = "A4",
-  landscape = false,
-  margin = { top: "12mm", bottom: "12mm", left: "12mm", right: "12mm" },
-} = {}) {
-  const remoteEndpoint = process.env.PDF_BROWSER_WS_ENDPOINT;
-  // Remote mode connects fresh for this one render and disconnects at the
-  // end (see the IMPORTANT note above getLocalBrowser for why a cached
-  // remote connection doesn't work with these hosted-browser services).
-  // Local mode reuses the one persistent browser instance as before.
-  const browser = remoteEndpoint ? await connectRemoteBrowser(remoteEndpoint) : await getLocalBrowser();
-  const page = await browser.newPage();
-  try {
-    const html = wrapHtmlDocument(bodyHtml, { extraCss });
-    // "networkidle0" was the original choice, but every resource here (the
-    // Arabic font, all styling) is already embedded as a base64 data URI —
-    // there's no real external network activity for "network idle" to ever
-    // detect. That's harmless when launching Chrome locally, but over a
-    // remote CDP connection it was observed hanging for the full default
-    // 30s timeout instead of resolving quickly — a known quirk of
-    // navigation-lifecycle tracking on connect()-ed remote sessions.
-    // "domcontentloaded" is sufficient (nothing here loads after DOM parse
-    // anyway) and immune to that hang. The document.fonts.ready wait right
-    // below is what actually guarantees the embedded font is applied before
-    // printing, regardless of this setting.
-    await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 60000 });
-    // Make sure the embedded Arabic font has actually finished loading
-    // and is applied before Chromium rasterizes the page to PDF — a race
-    // here is exactly the kind of "the font wasn't ready yet" bug that
-    // causes silent fallback to a font with no Arabic glyphs.
-    await page.evaluateHandle("document.fonts.ready");
-    const pdfBuffer = await page.pdf({
-      format,
-      landscape,
-      margin,
-      printBackground: true,
-      displayHeaderFooter: false, // no date, no URL, no page numbers — see file header note
-    });
-    return pdfBuffer;
-  } catch (e) {
-    console.error("✗ فشل توليد PDF أثناء تحويل الصفحة (page.setContent/page.pdf):");
-    console.error(e);
-    throw e;
-  } finally {
-    await page.close().catch(() => {}); // page may already be gone if the browser itself crashed above
-    if (remoteEndpoint) {
-      browser.disconnect(); // remote session: always drop our connection at the end of this one render — see note above
-    }
-  }
 }
 
 // Lets the server shut the local persistent browser down cleanly (e.g. on
