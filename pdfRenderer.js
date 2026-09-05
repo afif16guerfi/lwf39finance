@@ -219,49 +219,79 @@ function fontFaceCss() {
 }
 
 // A single headless Chromium instance is reused across requests (starting
-// it up takes real time) — it's lazily launched on first use and kept
-// alive for the life of the server process.
+// it up takes real time) — it's lazily launched/connected on first use and
+// kept alive for the life of the server process.
 //
-// The extra flags beyond --no-sandbox exist because this runs inside a
-// containerized host (Render, Docker, etc.) where the defaults commonly
-// fail: --disable-dev-shm-usage avoids Chromium crashing on the tiny
-// /dev/shm containers give by default, and --disable-gpu avoids GPU-related
-// startup failures on machines with no real GPU. If PUPPETEER_EXECUTABLE_PATH
-// is set (e.g. pointing at a Chromium already installed on the host instead
-// of the one Puppeteer downloads itself), Puppeteer picks it up
-// automatically — nothing else to configure here.
+// TWO MODES, chosen automatically:
+//
+// 1. REMOTE (recommended on small/free hosts like Render's Free plan): if
+//    PDF_BROWSER_WS_ENDPOINT is set, we connect to an already-running Chrome
+//    hosted elsewhere (e.g. a free Browserless.io account) instead of
+//    downloading/launching our own. This is what actually fixes PDF export
+//    on hosts too small to reliably download+unpack Chrome (confirmed cause
+//    on this project's Render Free instance: the download silently produced
+//    an incomplete binary — see ensureChromeInstalled()'s comments above).
+//    Get a free WebSocket URL by signing up at https://www.browserless.io
+//    (free tier), then set PDF_BROWSER_WS_ENDPOINT in Render's environment
+//    variables (Dashboard → service → Environment) to the URL they give you
+//    (looks like wss://production-sfo.browserless.io?token=XXXX).
+//
+// 2. LOCAL (the original behaviour, used when PDF_BROWSER_WS_ENDPOINT is not
+//    set — e.g. on a paid plan with enough RAM/disk, or any host where
+//    downloading Chrome works fine): launches Chrome from this instance's
+//    own disk via ensureChromeInstalled(), same as before.
+//
+// The extra launch flags beyond --no-sandbox (LOCAL mode only) exist because
+// that runs inside a containerized host (Render, Docker, etc.) where the
+// defaults commonly fail: --disable-dev-shm-usage avoids Chromium crashing
+// on the tiny /dev/shm containers give by default, and --disable-gpu avoids
+// GPU-related startup failures on machines with no real GPU.
 let browserPromise = null;
+let usingRemoteBrowser = false; // tracked so closeBrowser() disconnects instead of closing a shared remote session
 function getBrowser() {
   if (!browserPromise) {
-    // executablePath comes from ensureChromeInstalled() — the one place that
-    // actually verified (real file, real size) that a launchable Chrome sits
-    // at this path. Passing it straight into launch() means Puppeteer never
-    // recomputes "where is Chrome" a second time on its own; the exact path
-    // that was checked is the exact path that gets launched. Unless the host
-    // sets PUPPETEER_EXECUTABLE_PATH itself, in which case Puppeteer already
-    // prefers that over anything computed here.
-    browserPromise = ensureChromeInstalled().then((executablePath) => puppeteer.launch({
-      headless: true,
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || executablePath,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-      ],
-    }).catch((e) => {
-      browserPromise = null; // allow retrying on the next call instead of staying broken forever
-      // Logged in full here (not just re-thrown) because this is the one
-      // place that actually knows this was a *launch* failure specifically
-      // — by the time it reaches routes/finance.js's catch block, that
-      // context is easy to lose in a generic "تعذر إنشاء ملف PDF" log line.
-      console.error("✗ فشل تشغيل Chromium (Puppeteer) — راجع الرسالة أدناه لمعرفة السبب الدقيق:");
-      console.error(e);
-      throw e;
-    })).catch((e) => {
-      browserPromise = null; // also reset on an ensureChromeInstalled() failure, not just a launch() failure
-      throw e;
-    });
+    const remoteEndpoint = process.env.PDF_BROWSER_WS_ENDPOINT;
+    if (remoteEndpoint) {
+      usingRemoteBrowser = true;
+      browserPromise = puppeteer.connect({ browserWSEndpoint: remoteEndpoint }).catch((e) => {
+        browserPromise = null; // allow retrying on the next call instead of staying broken forever
+        console.error("✗ فشل الاتصال بمتصفح Chrome الخارجي (PDF_BROWSER_WS_ENDPOINT) — راجع الرسالة أدناه:");
+        console.error(e);
+        throw e;
+      });
+    } else {
+      usingRemoteBrowser = false;
+      // executablePath comes from ensureChromeInstalled() — the one place
+      // that actually verified (real file, real size) that a launchable
+      // Chrome sits at this path. Passing it straight into launch() means
+      // Puppeteer never recomputes "where is Chrome" a second time on its
+      // own; the exact path that was checked is the exact path that gets
+      // launched. Unless the host sets PUPPETEER_EXECUTABLE_PATH itself, in
+      // which case Puppeteer already prefers that over anything computed
+      // here.
+      browserPromise = ensureChromeInstalled().then((executablePath) => puppeteer.launch({
+        headless: true,
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || executablePath,
+        args: [
+          "--no-sandbox",
+          "--disable-setuid-sandbox",
+          "--disable-dev-shm-usage",
+          "--disable-gpu",
+        ],
+      }).catch((e) => {
+        browserPromise = null; // allow retrying on the next call instead of staying broken forever
+        // Logged in full here (not just re-thrown) because this is the one
+        // place that actually knows this was a *launch* failure specifically
+        // — by the time it reaches routes/finance.js's catch block, that
+        // context is easy to lose in a generic "تعذر إنشاء ملف PDF" log line.
+        console.error("✗ فشل تشغيل Chromium (Puppeteer) — راجع الرسالة أدناه لمعرفة السبب الدقيق:");
+        console.error(e);
+        throw e;
+      })).catch((e) => {
+        browserPromise = null; // also reset on an ensureChromeInstalled() failure, not just a launch() failure
+        throw e;
+      });
+    }
   }
   return browserPromise;
 }
@@ -308,6 +338,9 @@ function pdfEngineFailureHint(e) {
   }
   if (/browser folder .* exists but the executable .* is missing/i.test(msg)) {
     return "بقيت نسخة تالفة/غير مكتملة من Chrome من عملية نشر سابقة (المجلد موجود لكن الملف التنفيذي داخله مفقود)، والنسخة الحالية من الكود تحذف هذا المجلد تلقائيًا قبل إعادة التنزيل — إن ظهر هذا الخطأ رغم ذلك، أعد تشغيل الخدمة (Restart) من Render حتى يُعاد تنفيذ منطق التنظيف والتنزيل الذاتي من جديد.";
+  }
+  if (process.env.PDF_BROWSER_WS_ENDPOINT && /connect|websocket|WebSocket|ECONNREFUSED|401|403|unauthorized|invalid token|quota/i.test(msg)) {
+    return "فشل الاتصال بخدمة Chrome الخارجية عبر PDF_BROWSER_WS_ENDPOINT. تحقّق من أن رابط الـ WebSocket (وخاصة رمز token الموجود فيه) صحيح ولم تنتهِ صلاحيته، ومن أن الحساب في الخدمة الخارجية (مثل Browserless) لم يتجاوز الحد المجاني الشهري المسموح به.";
   }
   return "راجع رسالة الخطأ أعلاه — إن لم تكن واضحة، أرسلها كما هي للمطوّر لتشخيصها.";
 }
@@ -373,12 +406,20 @@ async function renderHtmlToPdf(bodyHtml, {
 }
 
 // Lets the server shut the shared browser down cleanly (e.g. on SIGTERM)
-// instead of leaving an orphaned Chromium process behind.
+// instead of leaving an orphaned Chromium process behind. When connected to
+// a remote browser (PDF_BROWSER_WS_ENDPOINT set), disconnect() is used
+// instead of close() — close() would tell the remote service to terminate
+// that browser session, which isn't ours to end that way; disconnect() just
+// drops our connection and lets the remote service manage its own lifecycle.
 async function closeBrowser() {
   if (!browserPromise) return;
   try {
     const browser = await browserPromise;
-    await browser.close();
+    if (usingRemoteBrowser) {
+      browser.disconnect();
+    } else {
+      await browser.close();
+    }
   } catch (e) {
     // already gone / never started — nothing to clean up
   } finally {
