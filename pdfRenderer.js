@@ -174,14 +174,28 @@ async function renderHtmlToPdf(bodyHtml, {
     // here is exactly the kind of "the font wasn't ready yet" bug that
     // causes silent fallback to a font with no Arabic glyphs.
     await page.evaluateHandle("document.fonts.ready");
-    const pdfBuffer = await page.pdf({
+    const pdfBytes = await page.pdf({
       format,
       landscape,
       margin,
       printBackground: true,
       displayHeaderFooter: false, // no date, no URL, no page numbers — see file header note
     });
-    return pdfBuffer;
+    // CONFIRMED ROOT CAUSE of "downloads but the PDF file is invalid": recent
+    // Puppeteer/puppeteer-core versions return a plain Uint8Array from
+    // page.pdf(), not a real Node Buffer. That distinction is invisible
+    // almost everywhere — but routes/finance.js hands this straight to
+    // Express's res.send(), which only writes raw bytes when
+    // Buffer.isBuffer() is true. For a plain Uint8Array (Buffer.isBuffer()
+    // is false even though Buffer is technically a Uint8Array subclass —
+    // the check is stricter than instanceof), Express silently falls back
+    // to res.json() instead, serializing the byte array as a numeric-keyed
+    // JSON object — literally {"0":37,"1":80,...} — and the browser
+    // downloads THAT as if it were the PDF. That JSON text is exactly what
+    // turned up when the "corrupt" .pdf file was opened in a text editor.
+    // Buffer.from() forces a genuine Buffer every time, independent of
+    // whatever type the installed Puppeteer version happens to return.
+    return Buffer.from(pdfBytes);
   } catch (e) {
     console.error("✗ فشل توليد PDF أثناء تحويل الصفحة (page.setContent/page.pdf):");
     console.error(e);
