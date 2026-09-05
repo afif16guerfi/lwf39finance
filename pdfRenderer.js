@@ -80,7 +80,38 @@ const execFileAsync = promisify(execFile);
 // hosts where build and runtime *do* share a disk, it means Chrome is
 // already there and this check below is an instant no-op.
 const PUPPETEER_CLI_PATH = require.resolve("puppeteer/lib/cjs/puppeteer/node/cli.js");
+
+// CONFIRMED ON RENDER (2026), second incident: a plain fs.existsSync(executablePath)
+// check is not enough. Production logs showed this exact sequence: this check
+// passed (so ensureChromeInstalled() returned immediately, logging nothing),
+// yet the very next line — puppeteer.launch() — failed with the browser's own
+// "Could not find Chrome" error for that identical path. The only way both are
+// true is that *something* exists at that path (so existsSync says yes) that
+// isn't a real, complete Chrome binary — e.g. a zero-byte or partially-written
+// leftover from an interrupted previous download/deploy. existsSync doesn't
+// care about file type or size, so it happily reports "present" for that too.
+// isChromeReallyInstalled() checks what actually matters: the path must be a
+// regular file (not a directory or broken symlink) with a non-trivial size —
+// the real Chrome binary is tens of megabytes, so anything near-empty is
+// unambiguously a corrupt leftover, not a valid executable.
+function isChromeReallyInstalled(executablePath) {
+  if (!executablePath) return false;
+  try {
+    const stat = fs.statSync(executablePath);
+    return stat.isFile() && stat.size > 1024 * 1024; // real Chrome binaries are 50MB+; 1MB is a generous floor for "not an empty/truncated stub"
+  } catch (e) {
+    return false; // path doesn't exist, or isn't readable — either way, not a usable install
+  }
+}
+
 let chromeEnsuredPromise = null;
+// Resolves to the verified, launch-ready executablePath (a string) once
+// Chrome is confirmed present on this instance's disk — never just undefined
+// — so callers (getBrowser()) can hand that *exact* path straight to
+// puppeteer.launch({ executablePath }) instead of letting launch() compute
+// its own path a second time. Two independent computations of "where is
+// Chrome" are exactly how the mismatch above happened; passing the one
+// verified path forward removes the second computation entirely.
 function ensureChromeInstalled() {
   if (!chromeEnsuredPromise) {
     chromeEnsuredPromise = (async () => {
@@ -90,10 +121,10 @@ function ensureChromeInstalled() {
       } catch (e) {
         executablePath = null; // computing the expected path itself failed — fall through to installing anyway
       }
-      if (executablePath && fs.existsSync(executablePath)) {
-        return; // already present on this instance's disk — the normal case once a host is warmed up
+      if (isChromeReallyInstalled(executablePath)) {
+        return executablePath; // already present on this instance's disk — the normal case once a host is warmed up
       }
-      console.log("⏳ لم يُعثر على Chrome في هذا الخادم — يجري تنزيله الآن قبل أول عملية تصدير PDF (قد يستغرق نحو دقيقة)...");
+      console.log("⏳ لم يُعثر على نسخة صالحة من Chrome في هذا الخادم — يجري تنزيله الآن قبل أول عملية تصدير PDF (قد يستغرق نحو دقيقة)...");
       // Real production case (Render, 2026): the build's copy of the browser
       // folder can survive the deploy as an empty/partial shell — the
       // directory itself is there but the actual chrome binary inside it is
@@ -105,12 +136,18 @@ function ensureChromeInstalled() {
       // executable is missing", even though a plain retry would fix it.
       // Clear out that stale folder first so the installer is forced to do
       // a full, real download+unpack instead of trusting a broken leftover.
+      // Was previously "only clean up if the file is totally missing" — that
+      // missed exactly the corrupt-but-present case isChromeReallyInstalled()
+      // now catches above (a truncated/zero-byte binary still "exists"), so a
+      // stale folder in that state was never cleared and every install
+      // attempt kept trusting the same broken leftover. Now: any time we've
+      // decided a reinstall is needed, always clear the old folder first.
       if (executablePath) {
         const staleBrowserDir = path.dirname(path.dirname(executablePath));
-        if (fs.existsSync(staleBrowserDir) && !fs.existsSync(executablePath)) {
+        if (fs.existsSync(staleBrowserDir)) {
           try {
             fs.rmSync(staleBrowserDir, { recursive: true, force: true });
-            console.log(`🧹 حذف نسخة Chrome غير مكتملة من نشر سابق: ${staleBrowserDir}`);
+            console.log(`🧹 حذف نسخة Chrome غير مكتملة/تالفة من نشر سابق: ${staleBrowserDir}`);
           } catch (e) {
             console.error(`✗ تعذّر حذف مجلد Chrome التالف (${staleBrowserDir}) قبل إعادة التنزيل:`);
             console.error(e);
@@ -125,7 +162,23 @@ function ensureChromeInstalled() {
           [PUPPETEER_CLI_PATH, "browsers", "install", "chrome"],
           { cwd: __dirname, env: process.env, maxBuffer: 1024 * 1024 * 20 }
         );
-        console.log("✔ تم تنزيل Chrome بنجاح، محرك PDF جاهز الآن.");
+        // Re-resolve rather than trusting the pre-install `executablePath`
+        // variable as-is: if it was null (the executablePath() call above
+        // threw), this is the first time we have a path at all. And do not
+        // trust a zero-exit-code install on faith either — verify with the
+        // same strict, real-file-size check used above, so a silent partial
+        // install (e.g. disk quota hit mid-download, no non-zero exit code)
+        // surfaces as a clear error here instead of an opaque failure later
+        // inside puppeteer.launch().
+        const installedPath = puppeteer.executablePath();
+        if (!isChromeReallyInstalled(installedPath)) {
+          throw new Error(
+            `اكتمل أمر التثبيت دون خطأ ظاهر، لكن الملف عند المسار المتوقَّع (${installedPath}) مفقود أو غير مكتمل. ` +
+            `على الأرجح مساحة القرص أو ذاكرة الخادم غير كافية لإكمال فك ضغط Chrome بالكامل — راجع خطة الاستضافة الحالية.`
+          );
+        }
+        console.log("✔ تم تنزيل Chrome والتحقق منه بنجاح، محرك PDF جاهز الآن.");
+        return installedPath;
       } catch (e) {
         // Don't cache a rejected promise forever — a transient network hiccup
         // during this on-demand install shouldn't permanently break PDF
@@ -180,8 +233,16 @@ function fontFaceCss() {
 let browserPromise = null;
 function getBrowser() {
   if (!browserPromise) {
-    browserPromise = ensureChromeInstalled().then(() => puppeteer.launch({
+    // executablePath comes from ensureChromeInstalled() — the one place that
+    // actually verified (real file, real size) that a launchable Chrome sits
+    // at this path. Passing it straight into launch() means Puppeteer never
+    // recomputes "where is Chrome" a second time on its own; the exact path
+    // that was checked is the exact path that gets launched. Unless the host
+    // sets PUPPETEER_EXECUTABLE_PATH itself, in which case Puppeteer already
+    // prefers that over anything computed here.
+    browserPromise = ensureChromeInstalled().then((executablePath) => puppeteer.launch({
       headless: true,
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || executablePath,
       args: [
         "--no-sandbox",
         "--disable-setuid-sandbox",
