@@ -26,12 +26,13 @@ function esc(v) {
 }
 
 const COLS = [
-  { key: "transactionNumber", label: "رقم العملية" },
+  { key: "displayNumber", label: "رقم العملية" },
   { key: "date", label: "التاريخ" },
   { key: "time", label: "الوقت" },
   { key: "title", label: "عنوان العملية" },
   { key: "type", label: "النوع" },
-  { key: "category", label: "جهة الصرف" },
+  { key: "category", label: "اللجنة" },
+  { key: "payee", label: "جهة الصرف" },
   { key: "amount", label: "المبلغ" },
   { key: "balance", label: "الرصيد الحالي" },
 ];
@@ -48,12 +49,15 @@ function buildHtml({ report, settings }) {
 
   const rows = report.transactions.map((t, i) => {
     const cells = {
-      transactionNumber: esc(t.transactionNumber),
+      // رقم العملية هنا هو الترقيم التسلسلي للعرض (1 → 2 → 3 → ...) في
+      // الترتيب الحالي للتقرير — وليس الرقم المرجعي الدائم للعملية.
+      displayNumber: esc(t.displayNumber != null ? t.displayNumber : i + 1),
       date: esc(t.date),
       time: esc(t.time || "00:00"),
       title: esc(t.title),
       type: esc(t.type === "income" ? "دخول" : "خروج"),
       category: esc(t.categoryName || "—"),
+      payee: esc(t.payeeName || "—"),
       amount: esc(formatAmount(t.amountCents)),
       balance: esc(t.runningBalanceCents != null ? formatAmount(t.runningBalanceCents) : "—"),
     };

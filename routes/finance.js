@@ -58,7 +58,11 @@ function actorName(req) {
 }
 
 function toPublicTransaction(t, data) {
+  // categoryId/categoryName = اللجنة (the committee/activity spent FOR).
+  // payeeId/payeeName = جهة الصرف (who the money was actually paid TO).
+  // Two completely independent lookups — never merged (section "ثامنًا").
   const category = t.categoryId ? (data.financeCategories || []).find((c) => c.id === t.categoryId) : null;
+  const payee = t.payeeId ? (data.financePayees || []).find((p) => p.id === t.payeeId) : null;
   return {
     ...t,
     amount: t.amountCents / 100,
@@ -66,6 +70,7 @@ function toPublicTransaction(t, data) {
     runningBalance: t.runningBalanceCents != null ? t.runningBalanceCents / 100 : null,
     runningBalanceFormatted: t.runningBalanceCents != null ? core.formatAmount(t.runningBalanceCents) : null,
     categoryName: category ? category.name : null,
+    payeeName: payee ? payee.name : null,
   };
 }
 
@@ -513,6 +518,92 @@ router.delete("/categories/:id", requireAnyRole(ADMIN_ONLY), async (req, res) =>
 });
 
 // ============================================================
+// جهات الصرف (Payees) — the entity money was actually paid TO (e.g. مطعم
+// الشاف، فندق، شركة). Fully independent from اللجان above: own collection,
+// own admin CRUD, own selection list on expense transactions (section
+// "ثامنًا"/"تاسعًا"/"عاشرًا" of the برنامج update).
+// ============================================================
+router.get("/payees", async (req, res) => {
+  const data = await db.getAll();
+  res.json({ payees: data.financePayees || [] });
+});
+
+router.post("/payees", requireAnyRole(ADMIN_ONLY), async (req, res) => {
+  const data = await db.getAll();
+  const name = String((req.body && req.body.name) || "").trim();
+  if (!name) return res.status(400).json({ error: "اسم جهة الصرف مطلوب." });
+  if ((data.financePayees || []).some((p) => p.name === name)) {
+    return res.status(400).json({ error: "توجد جهة صرف بنفس الاسم." });
+  }
+  const now = new Date().toISOString();
+  const payee = {
+    id: uuidv4(),
+    name,
+    description: (req.body.description || "").trim() || null,
+    status: core.ENTITY_STATUS.ACTIVE,
+    createdAt: now,
+    updatedAt: now,
+  };
+  data.financePayees.push(payee);
+  addFinanceAuditEntry(data, {
+    userId: req.user.id, userName: actorName(req), userRole: req.user.role,
+    action: FINANCE_ACTIONS.CREATE_PAYEE, entity: "payee", entityId: payee.id,
+    newData: payee, summary: `تمت إضافة جهة صرف جديدة: ${name}.`,
+  });
+  await db.saveAll(data);
+  res.status(201).json({ payee });
+});
+
+router.put("/payees/:id", requireAnyRole(ADMIN_ONLY), async (req, res) => {
+  const data = await db.getAll();
+  const payee = (data.financePayees || []).find((p) => p.id === req.params.id);
+  if (!payee) return res.status(404).json({ error: "جهة الصرف غير موجودة." });
+  const before = { ...payee };
+
+  if (req.body.name !== undefined) {
+    const name = String(req.body.name).trim();
+    if (!name) return res.status(400).json({ error: "اسم جهة الصرف مطلوب." });
+    payee.name = name;
+  }
+  if (req.body.description !== undefined) payee.description = String(req.body.description).trim() || null;
+  if (req.body.status !== undefined && [core.ENTITY_STATUS.ACTIVE, core.ENTITY_STATUS.DISABLED].includes(req.body.status)) {
+    payee.status = req.body.status;
+  }
+  payee.updatedAt = new Date().toISOString();
+
+  addFinanceAuditEntry(data, {
+    userId: req.user.id, userName: actorName(req), userRole: req.user.role,
+    action: payee.status === core.ENTITY_STATUS.DISABLED && before.status !== payee.status ? FINANCE_ACTIONS.DISABLE_PAYEE : FINANCE_ACTIONS.UPDATE_PAYEE,
+    entity: "payee", entityId: payee.id, oldData: before, newData: payee,
+    summary: `تم تعديل جهة الصرف: ${payee.name}.`,
+  });
+  await db.saveAll(data);
+  res.json({ payee });
+});
+
+// Hard delete is only allowed when the payee has never been used by any
+// transaction (section "الحادي عشر": حماية البيانات التاريخية — لا تفقد
+// أي معلومة من العمليات السابقة). Otherwise the client should PUT
+// status=disabled instead.
+router.delete("/payees/:id", requireAnyRole(ADMIN_ONLY), async (req, res) => {
+  const data = await db.getAll();
+  const idx = (data.financePayees || []).findIndex((p) => p.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: "جهة الصرف غير موجودة." });
+  const inUse = (data.financeTransactions || []).some((t) => t.payeeId === req.params.id);
+  if (inUse) {
+    return res.status(400).json({ error: "لا يمكن حذف جهة صرف مرتبطة بعمليات مالية. قم بتعطيلها بدلاً من ذلك." });
+  }
+  const [removed] = data.financePayees.splice(idx, 1);
+  addFinanceAuditEntry(data, {
+    userId: req.user.id, userName: actorName(req), userRole: req.user.role,
+    action: FINANCE_ACTIONS.DELETE_PAYEE, entity: "payee", entityId: removed.id,
+    oldData: removed, summary: `تم حذف جهة الصرف: ${removed.name}.`,
+  });
+  await db.saveAll(data);
+  res.json({ ok: true });
+});
+
+// ============================================================
 // Reports
 // ============================================================
 router.get("/reports/financial", async (req, res) => {
@@ -525,6 +616,7 @@ router.get("/reports/financial", async (req, res) => {
     balanceFormatted: core.formatAmount(report.balanceCents),
     transactions: report.transactions.map((t) => toPublicTransaction(t, data)),
     byCategory: report.byCategory.map((c) => ({ ...c, totalFormatted: core.formatAmount(c.totalCents) })),
+    byPayee: report.byPayee.map((p) => ({ ...p, totalFormatted: core.formatAmount(p.totalCents) })),
   });
 });
 
@@ -532,6 +624,12 @@ router.get("/reports/by-category", async (req, res) => {
   const data = await db.getAll();
   const report = core.buildCategoryReport(data);
   res.json({ categories: report.map((c) => ({ ...c, totalFormatted: core.formatAmount(c.totalCents) })) });
+});
+
+router.get("/reports/by-payee", async (req, res) => {
+  const data = await db.getAll();
+  const report = core.buildPayeeReport(data);
+  res.json({ payees: report.map((p) => ({ ...p, totalFormatted: core.formatAmount(p.totalCents) })) });
 });
 
 // ============================================================

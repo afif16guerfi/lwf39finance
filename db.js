@@ -51,7 +51,17 @@ function defaultData() {
     auditLog: [],
     // ---- Finance module ("المالية") ----
     financeTransactions: [],
+    // اللجنة — the committee/activity an expense was made FOR (e.g. لجنة
+    // التحكيم، اللجنة الفنية). Kept on its original `financeCategories`
+    // storage name for backward compatibility with every already-recorded
+    // transaction's categoryId — only its label/meaning was clarified, not
+    // its storage key (see financeCore.js).
     financeCategories: [],
+    // جهة الصرف — the entity the money was actually paid TO (e.g. مطعم
+    // الشاف، فندق، شركة). A brand-new, fully independent collection — never
+    // merged with financeCategories above (section "ثامنًا" of the برنامج
+    // update).
+    financePayees: [],
     // Financial years ("السنوات المالية"). The platform used to also have
     // an independent "الموسم الرياضي" (sporting season) concept here — it
     // has been removed entirely in favour of relying on financial years
@@ -115,6 +125,7 @@ async function getAll() {
   // every other backfill in this function).
   if (!Array.isArray(data.financeTransactions)) data.financeTransactions = [];
   if (!Array.isArray(data.financeCategories)) data.financeCategories = [];
+  if (!Array.isArray(data.financePayees)) data.financePayees = [];
   if (!Array.isArray(data.financeYears)) data.financeYears = [];
   if (!Array.isArray(data.financeAuditLog)) data.financeAuditLog = [];
   if (!data.financeSettings || typeof data.financeSettings !== "object") {
@@ -200,6 +211,11 @@ async function getAll() {
     }
     if (!t.time) t.time = "00:00";
     if (!t.occurredAt) t.occurredAt = `${t.date}T${t.time}:00`;
+    // جهة الصرف (payeeId) is a brand-new field — a transaction recorded
+    // before it existed simply has none (shown as "—" in every list/report/
+    // export/print). Never guessed at, never backfilled from اللجنة
+    // (categoryId) — the two are unrelated concepts (section "ثامنًا").
+    if (t.payeeId === undefined) t.payeeId = null;
   });
 
   // One-time migration: transaction numbering is ONE unified 1..N sequence

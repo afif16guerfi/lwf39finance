@@ -134,16 +134,40 @@ function formatDateDMY(isoDate) {
   return `${m[3]}/${m[2]}/${m[1]}`;
 }
 
-// ---- Display ordering (ترتيب العمليات حسب رقم العملية) --------------------
+// ---- Display ordering (ترتيب العمليات حسب التاريخ والوقت) -----------------
 // Every screen, report, export, and print that lists transactions must
-// order them by their real transaction number (رقم العملية) — never by
-// row/insertion order, and never implicitly by date — so the same choice
+// order them by their real date+time (occurredAt) — never by the stored
+// رقم العملية, and never by row/insertion order — so the same choice
 // (تصاعدي/تنازلي) produces the exact same order everywhere. "oldest" means
-// تصاعدي (1 → 2 → 3 → ...); "newest" means تنازلي (... → 3 → 2 → 1). This
-// is purely a DISPLAY/EXPORT/PRINT ordering — the running balance (see
-// withRunningBalance below) always stays computed in true chronological
-// (occurredAt) order regardless of what order the rows are laid out in
-// afterwards, so the "الرصيد" column is never affected by this choice.
+// تصاعدي (من الأقدم إلى الأحدث)؛ "newest" means تنازلي (من الأحدث إلى
+// الأقدم). Ties (same date+time) fall back to createdAt so the order is
+// always fully deterministic. This is purely a DISPLAY/EXPORT/PRINT
+// ordering — the running balance (see withRunningBalance below) always
+// stays computed in true chronological (occurredAt) order regardless of
+// what order the rows are laid out in afterwards, so the "الرصيد" column
+// is never affected by this choice.
+function orderByOccurredAt(list, order) {
+  const sorted = chronological(list); // always oldest -> newest first
+  if (order === "newest") sorted.reverse();
+  return sorted;
+}
+
+// رقم العملية المعروض (displayNumber) is a PURE display/position sequence —
+// it always starts at 1 and counts up (1 → 2 → 3 → ...) in whatever order
+// the rows are currently laid out in, and it is NEVER reversed when the
+// order is تنازلي. It has nothing to do with the transaction's own stored
+// `transactionNumber` (a permanent per-transaction reference kept for
+// search/audit purposes) — this is computed fresh every time a list is
+// built, over the already-ordered array, so pagination simply continues the
+// same running count across pages (page 2 of a 20-per-page list starts at
+// 21) rather than resetting to 1 on every page.
+function withDisplayNumbers(list, startAt = 1) {
+  return list.map((t, i) => ({ ...t, displayNumber: startAt + i }));
+}
+
+// Retained for any external caller that still needs to sort strictly by the
+// stored transactionNumber (e.g. a future admin diagnostic screen) — no
+// longer used for the default display/export/print ordering above.
 function parseTransactionNumberValue(numStr) {
   const n = parseInt(String(numStr || "").replace(/\D/g, ""), 10);
   return Number.isFinite(n) ? n : 0;
@@ -311,16 +335,36 @@ function validateTransactionInput(input, data, { isUpdate = false, excludeId = n
     return { ok: false, error: "هذه السنة المالية معطّلة، لا يمكن إضافة عمليات جديدة إليها." };
   }
 
+  // اللجنة (committee) — the committee/activity the expense was made FOR
+  // (e.g. لجنة التحكيم، اللجنة الفنية). Kept on the `categoryId` field name
+  // for backward compatibility with existing stored transactions/history —
+  // only its meaning/label changed, never its storage key.
   let categoryId = input.categoryId || null;
   if (type === TRANSACTION_TYPES.EXPENSE) {
-    if (!categoryId) return { ok: false, error: "جهة الصرف مطلوبة لعمليات الخروج." };
+    if (!categoryId) return { ok: false, error: "اللجنة مطلوبة لعمليات الخروج." };
     const category = (data.financeCategories || []).find((c) => c.id === categoryId);
-    if (!category) return { ok: false, error: "جهة الصرف غير موجودة." };
+    if (!category) return { ok: false, error: "اللجنة غير موجودة." };
     if (category.status !== ENTITY_STATUS.ACTIVE) {
+      return { ok: false, error: "هذه اللجنة معطّلة ولا يمكن استخدامها في عملية جديدة." };
+    }
+  } else {
+    categoryId = null; // income transactions never carry a committee
+  }
+
+  // جهة الصرف (payee) — the entity the money was actually paid TO (e.g.
+  // مطعم الشاف، فندق، شركة). Completely separate from اللجنة above: two
+  // independent fields, two independent tables, never merged (section
+  // "ثامنًا" of the برنامج update).
+  let payeeId = input.payeeId || null;
+  if (type === TRANSACTION_TYPES.EXPENSE) {
+    if (!payeeId) return { ok: false, error: "جهة الصرف مطلوبة لعمليات الخروج." };
+    const payee = (data.financePayees || []).find((p) => p.id === payeeId);
+    if (!payee) return { ok: false, error: "جهة الصرف غير موجودة." };
+    if (payee.status !== ENTITY_STATUS.ACTIVE) {
       return { ok: false, error: "جهة الصرف هذه معطّلة ولا يمكن استخدامها في عملية جديدة." };
     }
   } else {
-    categoryId = null; // income transactions never carry a spending category
+    payeeId = null; // income transactions never carry a payee
   }
 
   if (input.attachment && input.attachment.mimetype && !ALLOWED_ATTACHMENT_MIMES.includes(input.attachment.mimetype)) {
@@ -359,6 +403,7 @@ function validateTransactionInput(input, data, { isUpdate = false, excludeId = n
       occurredAt: buildOccurredAt(dateStr, time),
       financialYearId,
       categoryId,
+      payeeId,
       details: input.details ? String(input.details).trim() : null,
       notes: input.notes ? String(input.notes).trim() : null,
     },
@@ -443,11 +488,12 @@ function listTransactions(data, filters = {}) {
     .filter((t) => t.financialYearId === financialYearId)
     .map((t) => ({ ...t, runningBalanceCents: balanceMap.get(t.id) ?? null }));
 
-  const { q, type, categoryId, dateFrom, dateTo, amountMin, amountMax, transactionNumber } = filters;
+  const { q, type, categoryId, payeeId, dateFrom, dateTo, amountMin, amountMax, transactionNumber } = filters;
 
   if (transactionNumber) list = list.filter((t) => t.transactionNumber.includes(String(transactionNumber).trim()));
   if (type && [TRANSACTION_TYPES.INCOME, TRANSACTION_TYPES.EXPENSE].includes(type)) list = list.filter((t) => t.type === type);
-  if (categoryId) list = list.filter((t) => t.categoryId === categoryId);
+  if (categoryId) list = list.filter((t) => t.categoryId === categoryId); // اللجنة
+  if (payeeId) list = list.filter((t) => t.payeeId === payeeId); // جهة الصرف
   if (dateFrom) list = list.filter((t) => t.date >= dateFrom);
   if (dateTo) list = list.filter((t) => t.date <= dateTo);
   if (amountMin !== undefined && amountMin !== null && amountMin !== "") {
@@ -468,8 +514,13 @@ function listTransactions(data, filters = {}) {
     );
   }
 
+  // ترتيب العمليات حسب التاريخ والوقت (not by رقم العملية — see
+  // orderByOccurredAt above), then the purely-positional رقم العملية
+  // المعروض is assigned over that final order, BEFORE pagination slices it
+  // — so numbering stays continuous (1, 2, 3, ...) across pages regardless
+  // of which page/order/filter is currently applied.
   const order = filters.order === "oldest" ? "oldest" : "newest";
-  list = orderByTransactionNumber(list, order);
+  list = withDisplayNumbers(orderByOccurredAt(list, order));
 
   const totalIncomeCents = list.filter((t) => t.type === TRANSACTION_TYPES.INCOME).reduce((s, t) => s + t.amountCents, 0);
   const totalExpenseCents = list.filter((t) => t.type === TRANSACTION_TYPES.EXPENSE).reduce((s, t) => s + t.amountCents, 0);
@@ -549,6 +600,7 @@ function buildFinancialReport(data, { period, dateFrom, dateTo, financialYearId,
   const totalIncomeCents = income.reduce((s, t) => s + t.amountCents, 0);
   const totalExpenseCents = expense.reduce((s, t) => s + t.amountCents, 0);
 
+  // إجمالي المصاريف حسب اللجنة — grouped by categoryId (اللجنة).
   const byCategory = {};
   expense.forEach((t) => {
     const key = t.categoryId || "uncategorized";
@@ -559,6 +611,21 @@ function buildFinancialReport(data, { period, dateFrom, dateTo, financialYearId,
   const byCategoryList = Object.values(byCategory).map((row) => {
     const cat = (data.financeCategories || []).find((c) => c.id === row.categoryId);
     return { ...row, categoryName: cat ? cat.name : "غير محدد" };
+  });
+
+  // إجمالي المصاريف حسب جهة الصرف — grouped by payeeId (جهة الصرف),
+  // completely independent from the اللجنة breakdown above (section
+  // "ثامنًا"/"تاسعًا" of the برنامج update: never merge the two).
+  const byPayee = {};
+  expense.forEach((t) => {
+    const key = t.payeeId || "unspecified";
+    if (!byPayee[key]) byPayee[key] = { payeeId: t.payeeId, count: 0, totalCents: 0 };
+    byPayee[key].count += 1;
+    byPayee[key].totalCents += t.amountCents;
+  });
+  const byPayeeList = Object.values(byPayee).map((row) => {
+    const payee = (data.financePayees || []).find((p) => p.id === row.payeeId);
+    return { ...row, payeeName: payee ? payee.name : "غير محدد" };
   });
 
   const financialYear = fyId ? getFinancialYear(data, fyId) : null;
@@ -587,8 +654,14 @@ function buildFinancialReport(data, { period, dateFrom, dateTo, financialYearId,
     balanceCents: (financialYear ? financialYear.openingBalanceCents : 0) + totalIncomeCents - totalExpenseCents,
     incomeCount: income.length,
     expenseCount: expense.length,
-    transactions: orderByTransactionNumber(list, reportOrder),
+    // ترتيب حسب التاريخ والوقت (not رقم العملية), with a fresh purely-
+    // positional رقم العملية المعروض assigned over the final report order —
+    // exports/print/on-screen all read this SAME ordered+numbered array, so
+    // they can never disagree with each other (section 4/5 of the برنامج
+    // update).
+    transactions: withDisplayNumbers(orderByOccurredAt(list, reportOrder)),
     byCategory: byCategoryList.sort((a, b) => b.totalCents - a.totalCents),
+    byPayee: byPayeeList.sort((a, b) => b.totalCents - a.totalCents),
   };
 }
 
@@ -601,6 +674,24 @@ function buildCategoryReport(data, { financialYearId } = {}) {
       categoryId: cat.id,
       name: cat.name,
       status: cat.status,
+      count: txns.length,
+      totalCents: txns.reduce((s, t) => s + t.amountCents, 0),
+    };
+  }).sort((a, b) => b.totalCents - a.totalCents);
+}
+
+// Same report, but grouped by جهة الصرف (payeeId) instead of اللجنة
+// (categoryId) — a fully independent breakdown, never merged with the one
+// above.
+function buildPayeeReport(data, { financialYearId } = {}) {
+  const fyId = financialYearId || getActiveFinancialYearId(data);
+  const payees = data.financePayees || [];
+  return payees.map((payee) => {
+    const txns = (data.financeTransactions || []).filter((t) => t.payeeId === payee.id && (!fyId || t.financialYearId === fyId));
+    return {
+      payeeId: payee.id,
+      name: payee.name,
+      status: payee.status,
       count: txns.length,
       totalCents: txns.reduce((s, t) => s + t.amountCents, 0),
     };
@@ -646,6 +737,8 @@ module.exports = {
   formatAmount,
   formatDateDMY,
   orderByTransactionNumber,
+  orderByOccurredAt,
+  withDisplayNumbers,
   toCents,
   formatTransactionNumber,
   transactionNumberScopeKey,
@@ -659,6 +752,7 @@ module.exports = {
   listTransactions,
   buildFinancialReport,
   buildCategoryReport,
+  buildPayeeReport,
   buildMonthlySeries,
   uuidv4,
   // Financial years
