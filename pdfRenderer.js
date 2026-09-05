@@ -382,7 +382,18 @@ async function renderHtmlToPdf(bodyHtml, {
   const page = await browser.newPage();
   try {
     const html = wrapHtmlDocument(bodyHtml, { extraCss });
-    await page.setContent(html, { waitUntil: "networkidle0" });
+    // "networkidle0" was the original choice, but every resource here (the
+    // Arabic font, all styling) is already embedded as a base64 data URI —
+    // there's no real external network activity for "network idle" to ever
+    // detect. That's harmless when launching Chrome locally, but over a
+    // remote CDP connection (see PDF_BROWSER_WS_ENDPOINT above) it was
+    // observed hanging for the full default 30s timeout instead of
+    // resolving quickly — a known quirk of navigation-lifecycle tracking on
+    // connect()-ed remote sessions. "domcontentloaded" is sufficient (nothing
+    // here loads after DOM parse anyway) and immune to that hang. The
+    // document.fonts.ready wait right below is what actually guarantees the
+    // embedded font is applied before printing, regardless of this setting.
+    await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 60000 });
     // Make sure the embedded Arabic font has actually finished loading
     // and is applied before Chromium rasterizes the page to PDF — a race
     // here is exactly the kind of "the font wasn't ready yet" bug that
