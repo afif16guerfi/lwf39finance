@@ -1,6 +1,6 @@
 // financeExcel.js — builds the official "تصدير Excel" workbook (section 14).
 const ExcelJS = require("exceljs");
-const { formatAmount } = require("./financeCore");
+const { formatAmount, formatDateDMY } = require("./financeCore");
 
 async function buildExcelReport({ report, settings, query = {} }) {
   const workbook = new ExcelJS.Workbook();
@@ -27,7 +27,13 @@ async function buildExcelReport({ report, settings, query = {} }) {
   sheet.getCell("A3").font = { size: 13, bold: true };
   sheet.getCell("A3").alignment = { horizontal: "center" };
 
-  const periodText = `الفترة: ${report.range.from || "البداية"} إلى ${report.range.to || "اليوم"}`;
+  // "فترة التقرير" — plain day/month/year only, reflecting the period the
+  // user actually chose when generating the report (see financeCore.js:
+  // buildFinancialReport -> displayRange).
+  const dr = report.displayRange || report.range || {};
+  const fromLabel = formatDateDMY(dr.from) || "—";
+  const toLabel = formatDateDMY(dr.to) || "—";
+  const periodText = `فترة التقرير: من ${fromLabel} إلى ${toLabel}`;
   sheet.mergeCells("A4:H4");
   sheet.getCell("A4").value = report.financialYear ? `السنة المالية: ${report.financialYear.year}  —  ${periodText}` : periodText;
   sheet.getCell("A4").alignment = { horizontal: "center" };

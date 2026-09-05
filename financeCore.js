@@ -122,6 +122,38 @@ function formatAmount(cents) {
   return `${formatted} دج`;
 }
 
+// ---- Date formatting for exported/printed reports --------------------------
+// Report periods (PDF/Excel) must show only a plain day/month/year date —
+// never the day name, the time, or any other extra information — in the
+// exact "DD/MM/YYYY" shape. Input is always the app's own "YYYY-MM-DD"
+// date string; anything else is returned unchanged rather than guessed at.
+function formatDateDMY(isoDate) {
+  if (!isoDate) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(isoDate));
+  if (!m) return String(isoDate);
+  return `${m[3]}/${m[2]}/${m[1]}`;
+}
+
+// ---- Display ordering (ترتيب العمليات حسب رقم العملية) --------------------
+// Every screen, report, export, and print that lists transactions must
+// order them by their real transaction number (رقم العملية) — never by
+// row/insertion order, and never implicitly by date — so the same choice
+// (تصاعدي/تنازلي) produces the exact same order everywhere. "oldest" means
+// تصاعدي (1 → 2 → 3 → ...); "newest" means تنازلي (... → 3 → 2 → 1). This
+// is purely a DISPLAY/EXPORT/PRINT ordering — the running balance (see
+// withRunningBalance below) always stays computed in true chronological
+// (occurredAt) order regardless of what order the rows are laid out in
+// afterwards, so the "الرصيد" column is never affected by this choice.
+function parseTransactionNumberValue(numStr) {
+  const n = parseInt(String(numStr || "").replace(/\D/g, ""), 10);
+  return Number.isFinite(n) ? n : 0;
+}
+function orderByTransactionNumber(list, order) {
+  const sorted = list.slice().sort((a, b) => parseTransactionNumberValue(a.transactionNumber) - parseTransactionNumberValue(b.transactionNumber));
+  if (order === "newest") sorted.reverse();
+  return sorted;
+}
+
 // Parses user input (a number or numeric string, possibly with commas) into
 // integer centimes. Returns null if it isn't a valid, finite, non-negative
 // amount — callers must treat null as a validation failure, never coerce it.
@@ -437,17 +469,22 @@ function listTransactions(data, filters = {}) {
   }
 
   const order = filters.order === "oldest" ? "oldest" : "newest";
-  list = chronological(list);
-  if (order === "newest") list.reverse();
+  list = orderByTransactionNumber(list, order);
 
   const totalIncomeCents = list.filter((t) => t.type === TRANSACTION_TYPES.INCOME).reduce((s, t) => s + t.amountCents, 0);
   const totalExpenseCents = list.filter((t) => t.type === TRANSACTION_TYPES.EXPENSE).reduce((s, t) => s + t.amountCents, 0);
 
-  const page = Math.max(1, parseInt(filters.page, 10) || 1);
-  const pageSize = [20, 50, 100].includes(parseInt(filters.pageSize, 10)) ? parseInt(filters.pageSize, 10) : 20;
   const total = list.length;
+  // pageSize "all" bypasses pagination entirely (used internally to build a
+  // full, correctly-ordered dataset for printing) — never exposed as a
+  // user-facing page-size choice, which stays limited to 5/10/20/50.
+  const wantAll = filters.pageSize === "all";
+  const page = wantAll ? 1 : Math.max(1, parseInt(filters.page, 10) || 1);
+  const pageSize = wantAll
+    ? (total || 1)
+    : ([5, 10, 20, 50].includes(parseInt(filters.pageSize, 10)) ? parseInt(filters.pageSize, 10) : 20);
   const start = (page - 1) * pageSize;
-  const pageItems = list.slice(start, start + pageSize);
+  const pageItems = wantAll ? list : list.slice(start, start + pageSize);
 
   return {
     items: pageItems,
@@ -500,8 +537,8 @@ function periodRange(period, custom = {}) {
   return { from, to };
 }
 
-function buildFinancialReport(data, { period, dateFrom, dateTo, financialYearId } = {}) {
-  const range = period === "custom" || (!period && (dateFrom || dateTo)) ? { from: dateFrom, to: dateTo } : periodRange(period);
+function buildFinancialReport(data, { period, dateFrom, dateTo, financialYearId, order } = {}) {
+  const range = period === "custom" || (!period && (dateFrom || dateTo)) ? { from: dateFrom || null, to: dateTo || null } : periodRange(period);
   const fyId = financialYearId || getActiveFinancialYearId(data);
   let list = (data.financeTransactions || []).filter((t) => !fyId || t.financialYearId === fyId);
   if (range.from) list = list.filter((t) => t.date >= range.from);
@@ -525,8 +562,23 @@ function buildFinancialReport(data, { period, dateFrom, dateTo, financialYearId 
   });
 
   const financialYear = fyId ? getFinancialYear(data, fyId) : null;
+
+  // "فترة التقرير" for display (PDF/Excel/print) — reflects the period the
+  // user actually selected. When no explicit from/to was chosen (e.g. the
+  // "السنة المالية كاملة" scope), fall back to that financial year's own
+  // calendar bounds purely for the printed/exported label — this NEVER
+  // changes which transactions were filtered in above.
+  const displayRange = { from: range.from || null, to: range.to || null };
+  if (!displayRange.from && !displayRange.to && financialYear) {
+    displayRange.from = `${financialYear.year}-01-01`;
+    displayRange.to = `${financialYear.year}-12-31`;
+  }
+
+  const reportOrder = order === "newest" ? "newest" : "oldest";
   return {
     range,
+    displayRange,
+    order: reportOrder,
     financialYearId: fyId,
     financialYear,
     openingBalanceCents: financialYear ? financialYear.openingBalanceCents : 0,
@@ -535,7 +587,7 @@ function buildFinancialReport(data, { period, dateFrom, dateTo, financialYearId 
     balanceCents: (financialYear ? financialYear.openingBalanceCents : 0) + totalIncomeCents - totalExpenseCents,
     incomeCount: income.length,
     expenseCount: expense.length,
-    transactions: chronological(list),
+    transactions: orderByTransactionNumber(list, reportOrder),
     byCategory: byCategoryList.sort((a, b) => b.totalCents - a.totalCents),
   };
 }
@@ -592,6 +644,8 @@ module.exports = {
   DEFAULT_FINANCE_SETTINGS,
   getFinanceSettings,
   formatAmount,
+  formatDateDMY,
+  orderByTransactionNumber,
   toCents,
   formatTransactionNumber,
   transactionNumberScopeKey,

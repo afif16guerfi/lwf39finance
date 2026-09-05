@@ -16,7 +16,7 @@
 // pdfRenderer.js's renderHtmlToPdf(), which always calls Chromium with
 // displayHeaderFooter:false so nothing like that is injected into the
 // PDF at all, not even something hidden by CSS.
-const { formatAmount } = require("./financeCore");
+const { formatAmount, formatDateDMY } = require("./financeCore");
 const { renderHtmlToPdf } = require("./pdfRenderer");
 
 function esc(v) {
@@ -37,7 +37,14 @@ const COLS = [
 ];
 
 function buildHtml({ report, settings }) {
-  const periodLine = `${report.financialYear ? `السنة المالية: ${esc(report.financialYear.year)}  —  ` : ""}الفترة: ${esc(report.range.from || "البداية")} إلى ${esc(report.range.to || "اليوم")}`;
+  // "فترة التقرير" — plain day/month/year only (never a day name, time, or
+  // any other extra detail), exactly reflecting the period the user chose
+  // when the report was generated (see financeCore.js: buildFinancialReport
+  // -> displayRange).
+  const dr = report.displayRange || report.range || {};
+  const fromLabel = formatDateDMY(dr.from) || "—";
+  const toLabel = formatDateDMY(dr.to) || "—";
+  const periodLine = `${report.financialYear ? `السنة المالية: ${esc(report.financialYear.year)}  —  ` : ""}فترة التقرير: من ${esc(fromLabel)} إلى ${esc(toLabel)}`;
 
   const rows = report.transactions.map((t, i) => {
     const cells = {
